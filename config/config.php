@@ -6,9 +6,9 @@
 return [
     'database' => [
         'host' => $_ENV['DB_HOST'] ?? 'localhost',
-        'name' => $_ENV['DB_NAME'] ?? ' ',
-        'user' => $_ENV['DB_USER'] ?? ' ',
-        'pass' => $_ENV['DB_PASS'] ?? ' ',
+        'name' => $_ENV['DB_NAME'] ?? 'test2_audiensi',
+        'user' => $_ENV['DB_USER'] ?? 'test2_audiensi',
+        'pass' => $_ENV['DB_PASS'] ?? '!KNvM9mIOfv8r!i5',
         'charset' => 'utf8mb4'
     ],
     
@@ -36,5 +36,11 @@ return [
         'bcrypt_cost' => 12,
         'max_login_attempts' => 5,
         'lockout_duration' => 900 // 15 minutes
+    ],
+    
+    'monitoring' => [
+        'max_parallel_checks' => 25, // Process up to 10 checks simultaneously
+        'batch_size' => 300, // Maximum checks to load at once
+        'max_execution_time' => 300 // 5 minutes max execution time
     ]
 ];
