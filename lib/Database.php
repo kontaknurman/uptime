@@ -37,9 +37,35 @@ class Database {
 
         try {
             $this->pdo = new PDO($dsn, $this->config['user'], $this->config['pass'], $options);
+            
+            // CRITICAL FIX: Synchronize MySQL timezone with PHP timezone
+            $phpTimezone = date_default_timezone_get();
+            $mysqlTimezone = $this->convertPhpTimezoneToMysql($phpTimezone);
+            
+            // Set MySQL session timezone to match PHP
+            $this->pdo->exec("SET time_zone = '{$mysqlTimezone}'");
+            
+            error_log("Database connected with timezone sync: PHP={$phpTimezone}, MySQL={$mysqlTimezone}");
+            
         } catch (PDOException $e) {
             error_log('Database connection failed: ' . $e->getMessage());
             throw new Exception('Database connection failed');
+        }
+    }
+
+    /**
+     * Convert PHP timezone to MySQL timezone format
+     */
+    private function convertPhpTimezoneToMysql(string $phpTimezone): string {
+        try {
+            // Get current offset for the timezone
+            $datetime = new DateTime('now', new DateTimeZone($phpTimezone));
+            $offset = $datetime->format('P'); // Returns format like +07:00
+            return $offset;
+        } catch (Exception $e) {
+            // Fallback to UTC if timezone conversion fails
+            error_log("Timezone conversion failed for {$phpTimezone}, using UTC");
+            return '+00:00';
         }
     }
 
@@ -110,5 +136,22 @@ class Database {
 
     public function rollback(): bool {
         return $this->pdo->rollback();
+    }
+
+    /**
+     * Debug method to check current timezones
+     */
+    public function getTimezoneInfo(): array {
+        $phpTimezone = date_default_timezone_get();
+        $phpTime = date('Y-m-d H:i:s');
+        
+        $mysqlInfo = $this->fetchOne("SELECT NOW() as mysql_time, @@session.time_zone as mysql_timezone");
+        
+        return [
+            'php_timezone' => $phpTimezone,
+            'php_time' => $phpTime,
+            'mysql_timezone' => $mysqlInfo['mysql_timezone'],
+            'mysql_time' => $mysqlInfo['mysql_time']
+        ];
     }
 }
