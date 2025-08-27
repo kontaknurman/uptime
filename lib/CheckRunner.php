@@ -1,4 +1,5 @@
 <?php
+/// lib/CheckRunner.php
 
 class CheckRunner {
     private $db;
@@ -14,6 +15,9 @@ class CheckRunner {
         if (isset($config['monitoring']['max_parallel_checks'])) {
             $this->maxParallel = min($config['monitoring']['max_parallel_checks'], 50);
         }
+        
+        // Log initialization
+        error_log("CheckRunner: Initialized with " . ($emailer ? "emailer configured" : "NO emailer"));
     }
 
     public function runDueChecks(): int {
@@ -25,6 +29,8 @@ class CheckRunner {
         if (empty($checks)) {
             return 0;
         }
+
+        error_log("CheckRunner: Found " . count($checks) . " checks due for execution");
 
         // Process checks in batches for parallel execution
         $executed = 0;
@@ -210,6 +216,8 @@ class CheckRunner {
         // Store result
         $resultId = $this->db->insert("check_results", $dataToStore);
         
+        error_log("CheckRunner: Stored result {$resultId} for check {$check['id']} - Status: " . ($isUp ? "UP" : "DOWN"));
+        
         // Handle state changes and incidents
         $this->handleStateChange($check, $isUp, $resultId);
         
@@ -234,60 +242,41 @@ class CheckRunner {
             }
         }
         
-        // 3. NEW: Check Expected Body Content (if specified)
+        // 3. Check Expected Body (if specified)
         if (!empty($check["expected_body"])) {
             if (!$this->validateBodyContent($check["expected_body"], $result["response_body"])) {
                 return false;
             }
         }
         
-        // All validations passed
         return true;
     }
 
     /**
-     * NEW: Validate response body contains expected content
+     * Validate expected headers against actual headers
      */
-    private function validateBodyContent(string $expectedBody, string $responseBody): bool {
-        $expectedBody = trim($expectedBody);
+    private function validateHeaders(string $expectedHeaders, string $actualHeaders): bool {
+        $expectedLines = array_filter(array_map('trim', explode("\n", $expectedHeaders)));
         
-        if (empty($expectedBody)) {
-            return true; // No validation needed
-        }
-        
-        // Decode HTML entities that might have been stored in database
-        $expectedBody = html_entity_decode($expectedBody, ENT_QUOTES, 'UTF-8');
-        
-        // Simple "contains" check (case-insensitive)
-        return stripos($responseBody, $expectedBody) !== false;
-    }
-
-    /**
-     * Validate response headers contain expected headers
-     */
-    private function validateHeaders(string $expectedHeaders, string $responseHeaders): bool {
-        $expectedHeaderLines = array_filter(array_map('trim', explode("\n", $expectedHeaders)));
-        
-        foreach ($expectedHeaderLines as $expectedHeader) {
-            if (empty($expectedHeader)) continue;
-            
-            // Parse expected header
-            $parts = explode(':', $expectedHeader, 2);
-            if (count($parts) !== 2) continue;
-            
-            $expectedKey = trim($parts[0]);
-            $expectedValue = trim($parts[1]);
-            
-            // Check if header exists in response (case-insensitive)
-            if (!preg_match("/^{$expectedKey}:\s*(.+)$/im", $responseHeaders, $matches)) {
-                return false;
-            }
-            
-            $actualValue = trim($matches[1]);
-            
-            // Simple contains check for header value
-            if (stripos($actualValue, $expectedValue) === false) {
-                return false;
+        foreach ($expectedLines as $expected) {
+            // Check if it's a regex pattern
+            if (preg_match('/^(.+?):\s*\/(.+)\/$/', $expected, $matches)) {
+                $headerName = $matches[1];
+                $pattern = $matches[2];
+                
+                // Extract the actual header value
+                if (preg_match('/^' . preg_quote($headerName, '/') . ':\s*(.+)$/mi', $actualHeaders, $headerMatch)) {
+                    if (!preg_match('/' . $pattern . '/', $headerMatch[1])) {
+                        return false;
+                    }
+                } else {
+                    return false; // Header not found
+                }
+            } else {
+                // Simple substring check
+                if (stripos($actualHeaders, $expected) === false) {
+                    return false;
+                }
             }
         }
         
@@ -295,20 +284,32 @@ class CheckRunner {
     }
 
     /**
-     * Determine whether to keep full response data
+     * Validate expected body content
+     */
+    private function validateBodyContent(string $expectedContent, string $actualBody): bool {
+        // Decode HTML entities that might have been stored
+        $expectedContent = html_entity_decode($expectedContent, ENT_QUOTES, 'UTF-8');
+        
+        // Check if it's a regex pattern (surrounded by /)
+        if (preg_match('/^\/(.+)\/[a-z]*$/i', trim($expectedContent), $matches)) {
+            return preg_match('/' . $matches[1] . '/', $actualBody) === 1;
+        }
+        
+        // Otherwise, do a simple substring check
+        return stripos($actualBody, $expectedContent) !== false;
+    }
+
+    /**
+     * Determine if full response data should be kept
      */
     private function shouldKeepFullData(array $check, bool $isUp): bool {
-        // Always keep full data if check is down or has error (for debugging)
+        // Always keep full data for DOWN results (for debugging)
         if (!$isUp) {
             return true;
         }
         
-        // Keep full data if the "keep_response_data" setting is enabled
-        if (!empty($check['keep_response_data'])) {
-            return true;
-        }
-        
-        return false;
+        // Check if keep_response_data is enabled for this check
+        return !empty($check["keep_response_data"]);
     }
 
     /**
@@ -416,33 +417,33 @@ class CheckRunner {
         $previousState = $check['last_state'];
         
         // Log state changes for debugging
-        error_log("Check {$check['id']}: State change from '{$previousState}' to '{$currentState}'");
+        error_log("CheckRunner: Check {$check['id']} ({$check['name']}): State change from '{$previousState}' to '{$currentState}'");
         
         // Handle state transitions
         if ($currentState === 'DOWN') {
             if ($previousState === 'UP') {
-                // State changed from UP to DOWN - open new incident
+                // State changed from UP to DOWN - open new incident and send alert
+                error_log("CheckRunner: Check {$check['id']} transitioned from UP to DOWN - opening incident and sending alert");
                 $this->openIncident($check['id'], $resultId);
                 $this->sendAlert($check, 'DOWN', $resultId);
-                error_log("Check {$check['id']}: Opened new incident for DOWN state");
             } elseif ($previousState === 'DOWN') {
-                // Still DOWN - update existing incident if needed
-                error_log("Check {$check['id']}: Still DOWN, incident remains open");
+                // Still DOWN - no new alert needed
+                error_log("CheckRunner: Check {$check['id']} still DOWN - no new alert");
             } elseif ($previousState === null) {
-                // First check and it's DOWN - open incident
+                // First check and it's DOWN - open incident and send alert
+                error_log("CheckRunner: Check {$check['id']} first check is DOWN - opening incident and sending alert");
                 $this->openIncident($check['id'], $resultId);
                 $this->sendAlert($check, 'DOWN', $resultId);
-                error_log("Check {$check['id']}: First check is DOWN, opened incident");
             }
         } elseif ($currentState === 'UP') {
             if ($previousState === 'DOWN') {
-                // State changed from DOWN to UP - close incident
+                // State changed from DOWN to UP - close incident and send recovery alert
+                error_log("CheckRunner: Check {$check['id']} recovered from DOWN to UP - closing incident and sending recovery alert");
                 $this->closeIncident($check['id'], $resultId);
                 $this->sendAlert($check, 'RECOVERY', $resultId);
-                error_log("Check {$check['id']}: Recovered to UP state, closed incident");
             } elseif ($previousState === null) {
-                // First check and it's UP - no incident needed
-                error_log("Check {$check['id']}: First check is UP, no incident needed");
+                // First check and it's UP - no action needed
+                error_log("CheckRunner: Check {$check['id']} first check is UP - no action needed");
             }
         }
     }
@@ -464,12 +465,12 @@ class CheckRunner {
                     "status" => "OPEN"
                 ]);
                 
-                error_log("Created new incident ID {$incidentId} for check {$checkId}");
+                error_log("CheckRunner: Created new incident ID {$incidentId} for check {$checkId}");
             } else {
-                error_log("Check {$checkId} already has open incident ID {$openIncident['id']}");
+                error_log("CheckRunner: Check {$checkId} already has open incident ID {$openIncident['id']}");
             }
         } catch (Exception $e) {
-            error_log("Failed to create incident for check {$checkId}: " . $e->getMessage());
+            error_log("CheckRunner: Failed to create incident for check {$checkId}: " . $e->getMessage());
         }
     }
 
@@ -483,51 +484,120 @@ class CheckRunner {
             ], "check_id = ? AND status = 'OPEN'", [$checkId]);
             
             if ($updated > 0) {
-                error_log("Closed {$updated} incident(s) for check {$checkId}");
+                error_log("CheckRunner: Closed {$updated} incident(s) for check {$checkId}");
             } else {
-                error_log("No open incidents found to close for check {$checkId}");
+                error_log("CheckRunner: No open incidents found to close for check {$checkId}");
             }
         } catch (Exception $e) {
-            error_log("Failed to close incident for check {$checkId}: " . $e->getMessage());
+            error_log("CheckRunner: Failed to close incident for check {$checkId}: " . $e->getMessage());
         }
     }
 
     private function sendAlert(array $check, string $type, int $resultId): void {
-        if (!$this->emailer || empty($check['alert_emails'])) {
+        // Early return if no emailer configured
+        if (!$this->emailer) {
+            error_log("CheckRunner: No emailer configured - skipping alert for check {$check['id']}");
+            return;
+        }
+        
+        // Early return if no alert emails configured
+        if (empty($check['alert_emails'])) {
+            error_log("CheckRunner: No alert emails configured for check {$check['id']} ({$check['name']})");
             return;
         }
 
+        // Parse and validate email addresses
         $emails = array_filter(array_map('trim', explode(',', $check['alert_emails'])));
         if (empty($emails)) {
+            error_log("CheckRunner: No valid emails after parsing for check {$check['id']}");
             return;
         }
+        
+        error_log("CheckRunner: Preparing to send {$type} alert for check {$check['id']} ({$check['name']}) to " . count($emails) . " recipient(s): " . implode(', ', $emails));
 
+        // Build email subject and body
         $subject = "[Uptime Monitor] {$type}: {$check['name']}";
         
-        $body = "Check: {$check['name']}\n";
+        $body = "========================================\n";
+        $body .= "UPTIME MONITOR ALERT\n";
+        $body .= "========================================\n\n";
+        $body .= "Check Name: {$check['name']}\n";
         $body .= "URL: {$check['url']}\n";
         $body .= "Status: {$type}\n";
-        $body .= "Time: " . date('Y-m-d H:i:s') . "\n";
+        $body .= "Time: " . date('Y-m-d H:i:s T') . "\n";
+        $body .= "========================================\n\n";
         
         if ($type === 'DOWN') {
-            $body .= "\nYour service appears to be down. We'll continue monitoring and notify you when it's back up.\n";
+            $body .= "⚠️ Your service appears to be DOWN.\n\n";
+            $body .= "We detected that your monitored endpoint is not responding as expected.\n";
+            $body .= "We'll continue monitoring and notify you when it's back online.\n\n";
             
-            // Add validation details for DOWN alerts
+            // Add check configuration details
+            $body .= "Check Configuration:\n";
+            $body .= "- Method: {$check['method']}\n";
+            $body .= "- Expected Status: {$check['expected_status']}\n";
+            $body .= "- Check Interval: " . ($check['interval_seconds'] / 60) . " minute(s)\n";
+            
+            // Add validation details if configured
             if (!empty($check['expected_body'])) {
-                $body .= "\nExpected body content: \"{$check['expected_body']}\"\n";
+                $body .= "- Expected Body: \"" . substr($check['expected_body'], 0, 50) . "...\"\n";
+            }
+            if (!empty($check['expected_headers'])) {
+                $headers = str_replace("\n", ", ", substr($check['expected_headers'], 0, 50));
+                $body .= "- Expected Headers: {$headers}...\n";
             }
         } else {
-            $body .= "\nYour service is back online.\n";
+            $body .= "✅ Your service is back ONLINE!\n\n";
+            $body .= "Good news! Your monitored endpoint is responding normally again.\n";
+            $body .= "The service has recovered and is now operational.\n";
         }
         
-        $body .= "\nView details: {$this->config['app']['base_url']}/check.php?id={$check['id']}\n";
+        $body .= "\n========================================\n";
+        $body .= "View Full Details:\n";
+        $body .= "{$this->config['app']['base_url']}/check.php?id={$check['id']}\n";
+        $body .= "========================================\n\n";
+        $body .= "This is an automated message from Uptime Monitor.\n";
+        $body .= "To modify alert settings, please login to your dashboard.\n";
 
+        // Send to each email address
+        $successCount = 0;
+        $failureCount = 0;
+        $failedEmails = [];
+        
         foreach ($emails as $email) {
             try {
-                $this->emailer->send($email, $subject, $body);
+                error_log("CheckRunner: Attempting to send {$type} alert to {$email} for check {$check['id']}");
+                
+                $result = $this->emailer->send($email, $subject, $body);
+                
+                if ($result === true) {
+                    $successCount++;
+                    error_log("CheckRunner: ✅ Successfully sent {$type} alert to {$email} for check {$check['id']}");
+                } else {
+                    $failureCount++;
+                    $failedEmails[] = $email;
+                    error_log("CheckRunner: ❌ Failed to send {$type} alert to {$email} for check {$check['id']} - send() returned false");
+                }
+                
             } catch (Exception $e) {
-                error_log("Failed to send alert email to {$email}: " . $e->getMessage());
+                $failureCount++;
+                $failedEmails[] = $email;
+                error_log("CheckRunner: ❌ Exception sending alert to {$email}: " . $e->getMessage());
             }
+        }
+        
+        // Log final summary
+        if ($successCount > 0 && $failureCount == 0) {
+            error_log("CheckRunner: ✅ Alert summary for check {$check['id']}: All {$successCount} email(s) sent successfully");
+        } elseif ($successCount == 0 && $failureCount > 0) {
+            error_log("CheckRunner: ❌ Alert summary for check {$check['id']}: All {$failureCount} email(s) failed to send");
+        } else {
+            error_log("CheckRunner: ⚠️ Alert summary for check {$check['id']}: {$successCount} sent, {$failureCount} failed");
+        }
+        
+        if (!empty($failedEmails)) {
+            error_log("CheckRunner: Failed recipients: " . implode(', ', $failedEmails));
         }
     }
 }
+?>
