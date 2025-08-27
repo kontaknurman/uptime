@@ -422,25 +422,22 @@ class CheckRunner {
         // Handle state transitions
         if ($currentState === 'DOWN') {
             if ($previousState === 'UP') {
-                // State changed from UP to DOWN - open new incident and send alert
-                error_log("CheckRunner: Check {$check['id']} transitioned from UP to DOWN - opening incident and sending alert");
-                $this->openIncident($check['id'], $resultId);
-                $this->sendAlert($check, 'DOWN', $resultId);
+                // State changed from UP to DOWN - open new incident (will send alert)
+                error_log("CheckRunner: Check {$check['id']} transitioned from UP to DOWN - opening incident");
+                $this->openIncident($check, $resultId);
             } elseif ($previousState === 'DOWN') {
                 // Still DOWN - no new alert needed
                 error_log("CheckRunner: Check {$check['id']} still DOWN - no new alert");
             } elseif ($previousState === null) {
-                // First check and it's DOWN - open incident and send alert
-                error_log("CheckRunner: Check {$check['id']} first check is DOWN - opening incident and sending alert");
-                $this->openIncident($check['id'], $resultId);
-                $this->sendAlert($check, 'DOWN', $resultId);
+                // First check and it's DOWN - open incident (will send alert)
+                error_log("CheckRunner: Check {$check['id']} first check is DOWN - opening incident");
+                $this->openIncident($check, $resultId);
             }
         } elseif ($currentState === 'UP') {
             if ($previousState === 'DOWN') {
-                // State changed from DOWN to UP - close incident and send recovery alert
-                error_log("CheckRunner: Check {$check['id']} recovered from DOWN to UP - closing incident and sending recovery alert");
-                $this->closeIncident($check['id'], $resultId);
-                $this->sendAlert($check, 'RECOVERY', $resultId);
+                // State changed from DOWN to UP - close incident (will send recovery alert)
+                error_log("CheckRunner: Check {$check['id']} recovered from DOWN to UP - closing incident");
+                $this->closeIncident($check, $resultId);
             } elseif ($previousState === null) {
                 // First check and it's UP - no action needed
                 error_log("CheckRunner: Check {$check['id']} first check is UP - no action needed");
@@ -448,48 +445,52 @@ class CheckRunner {
         }
     }
 
-    private function openIncident(int $checkId, int $resultId): void {
+    private function openIncident(array $check, int $resultId): void {
         try {
             // Check if there's already an open incident for this check
             $openIncident = $this->db->fetchOne(
                 "SELECT id FROM incidents WHERE check_id = ? AND status = 'OPEN'",
-                [$checkId]
+                [$check['id']]
             );
-            
+
             if (!$openIncident) {
                 // Create new incident
                 $incidentId = $this->db->insert("incidents", [
-                    "check_id" => $checkId,
+                    "check_id" => $check['id'],
                     "started_at" => date("Y-m-d H:i:s"),
                     "opened_by_result_id" => $resultId,
                     "status" => "OPEN"
                 ]);
-                
-                error_log("CheckRunner: Created new incident ID {$incidentId} for check {$checkId}");
+
+                error_log("CheckRunner: Created new incident ID {$incidentId} for check {$check['id']}");
+                // Send DOWN alert for new incident
+                $this->sendAlert($check, 'DOWN', $incidentId);
             } else {
-                error_log("CheckRunner: Check {$checkId} already has open incident ID {$openIncident['id']}");
+                error_log("CheckRunner: Check {$check['id']} already has open incident ID {$openIncident['id']}");
             }
         } catch (Exception $e) {
-            error_log("CheckRunner: Failed to create incident for check {$checkId}: " . $e->getMessage());
+            error_log("CheckRunner: Failed to create incident for check {$check['id']}: " . $e->getMessage());
         }
     }
 
-    private function closeIncident(int $checkId, int $resultId): void {
+    private function closeIncident(array $check, int $resultId): void {
         try {
             // Close all open incidents for this check
             $updated = $this->db->update("incidents", [
                 "ended_at" => date("Y-m-d H:i:s"),
                 "closed_by_result_id" => $resultId,
                 "status" => "CLOSED"
-            ], "check_id = ? AND status = 'OPEN'", [$checkId]);
-            
+            ], "check_id = ? AND status = 'OPEN'", [$check['id']]);
+
             if ($updated > 0) {
-                error_log("CheckRunner: Closed {$updated} incident(s) for check {$checkId}");
+                error_log("CheckRunner: Closed {$updated} incident(s) for check {$check['id']}");
+                // Send recovery alert when incidents closed
+                $this->sendAlert($check, 'RECOVERY', $resultId);
             } else {
-                error_log("CheckRunner: No open incidents found to close for check {$checkId}");
+                error_log("CheckRunner: No open incidents found to close for check {$check['id']}");
             }
         } catch (Exception $e) {
-            error_log("CheckRunner: Failed to close incident for check {$checkId}: " . $e->getMessage());
+            error_log("CheckRunner: Failed to close incident for check {$check['id']}: " . $e->getMessage());
         }
     }
 
