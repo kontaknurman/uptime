@@ -1,6 +1,6 @@
 <?php
 /**
- * Web-accessible check runner
+ * Web-accessible check runner - Simplified Version
  * URL: http://yoursite.com/run_checks.php?key=your_secret_key
  */
 
@@ -30,14 +30,6 @@ try {
     webOutput("=== UPTIME MONITOR CHECK RUNNER ===");
     webOutput("Started via web interface");
     
-    // Check authentication
-    if (!$auth->isLoggedIn()) {
-        webOutput("WARNING: Not authenticated - running in anonymous mode");
-    } else {
-        $user = $auth->getCurrentUser();
-        webOutput("Authenticated as: " . $user['email']);
-    }
-    
     // Initialize emailer if SMTP is configured
     $emailer = null;
     if (!empty($config['smtp']['host']) && !empty($config['smtp']['username'])) {
@@ -47,86 +39,24 @@ try {
         webOutput("⚠️  SMTP not configured - alerts will not be sent");
     }
     
-    // Get checks due for execution - fix the query to actually find overdue checks
+    // Get checks due for execution - simple query
     $dueChecks = $db->fetchAll(
-        'SELECT id, name, url, last_state, next_run_at, interval_seconds FROM checks WHERE enabled = 1 AND next_run_at <= NOW() ORDER BY next_run_at ASC'
+        'SELECT id, name, url, next_run_at, interval_seconds FROM checks 
+         WHERE enabled = 1 AND next_run_at <= NOW() 
+         ORDER BY next_run_at ASC'
     );
     
     webOutput("Found " . count($dueChecks) . " checks due for execution");
-    
-    // If no checks found by the query, let's debug why
-    if (empty($dueChecks)) {
-        webOutput("No checks found by due query. Checking all enabled checks...");
-        
-        $allEnabledChecks = $db->fetchAll(
-            'SELECT id, name, url, next_run_at, interval_seconds, enabled FROM checks WHERE enabled = 1 ORDER BY next_run_at ASC'
-        );
-        
-        webOutput("Found " . count($allEnabledChecks) . " enabled checks total:");
-        
-        $now = time();
-        $forceRunIds = [];
-        
-        foreach ($allEnabledChecks as $check) {
-            $nextTime = strtotime($check['next_run_at']);
-            $overdueSeconds = $now - $nextTime;
-            $overdueMinutes = floor($overdueSeconds / 60);
-            
-            if ($overdueSeconds > 0) {
-                webOutput("  • OVERDUE: {$check['name']} - overdue by {$overdueMinutes}m");
-                $forceRunIds[] = $check['id'];
-            } else {
-                webOutput("  • FUTURE: {$check['name']} - due in " . abs($overdueMinutes) . "m");
-            }
-        }
-        
-        // Force run overdue checks
-        if (!empty($forceRunIds)) {
-            webOutput("");
-            webOutput("🔄 Force-running " . count($forceRunIds) . " overdue checks...");
-            
-            $placeholders = str_repeat('?,', count($forceRunIds) - 1) . '?';
-            $dueChecks = $db->fetchAll(
-                "SELECT id, name, url, last_state, next_run_at, interval_seconds FROM checks WHERE id IN ({$placeholders}) ORDER BY next_run_at ASC",
-                $forceRunIds
-            );
-            
-            webOutput("Force-selected " . count($dueChecks) . " checks for execution");
-        }
-    }
     
     if (!empty($dueChecks)) {
         webOutput("Checks to execute:");
         foreach ($dueChecks as $check) {
             $nextTime = strtotime($check['next_run_at']);
-            $overdueMinutes = floor((time() - $nextTime) / 60);
-            $status = $check['last_state'] ? "({$check['last_state']})" : "(NEW)";
-            $overdueText = $overdueMinutes > 0 ? " - OVERDUE by {$overdueMinutes}m" : "";
+            $timeDiff = time() - $nextTime;
+            $status = $timeDiff >= 0 ? "DUE NOW" : "in " . abs($timeDiff) . "s";
             
-            webOutput("  • {$check['name']} - {$check['url']} {$status}{$overdueText}");
+            webOutput("  • {$check['name']} - {$check['url']} ({$status})");
         }
-        webOutput("");
-    }
-    
-    // Reset severely overdue checks before execution
-    $resetCount = 0;
-    foreach ($dueChecks as $check) {
-        $timeSinceScheduled = time() - strtotime($check['next_run_at']);
-        $overdueThreshold = $check['interval_seconds'] * 2;
-        
-        if ($timeSinceScheduled > $overdueThreshold) {
-            $db->update('checks', [
-                'next_run_at' => date('Y-m-d H:i:s')
-            ], 'id = ?', [$check['id']]);
-            
-            $resetCount++;
-            webOutput("🔄 Reset severely overdue check: {$check['name']} (was overdue by " . 
-                     floor($timeSinceScheduled / 60) . " minutes)");
-        }
-    }
-    
-    if ($resetCount > 0) {
-        webOutput("Reset {$resetCount} severely overdue checks");
         webOutput("");
     }
     
@@ -143,12 +73,13 @@ try {
     
     // Show results of executed checks
     if ($executed > 0) {
+        webOutput("");
         webOutput("Recent check results:");
         $recentResults = $db->fetchAll(
             "SELECT c.name, cr.http_status, cr.duration_ms, cr.is_up, cr.started_at, cr.error_message
              FROM check_results cr 
              JOIN checks c ON cr.check_id = c.id 
-             WHERE cr.started_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+             WHERE cr.started_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
              ORDER BY cr.started_at DESC LIMIT 10"
         );
         
@@ -167,7 +98,7 @@ try {
     $cleaned = $db->query($cleanupSql)->rowCount();
     
     if ($cleaned > 0) {
-        webOutput(" Cleaned up {$cleaned} old result records");
+        webOutput("🧹 Cleaned up {$cleaned} old result records");
     } else {
         webOutput("🧹 No old records to clean");
     }
@@ -186,7 +117,7 @@ try {
     ];
     
     webOutput("📊 Total checks: {$stats['total_checks']} ({$stats['enabled_checks']} enabled)");
-    webOutput(" Status: {$stats['up_checks']} UP, {$stats['down_checks']} DOWN");
+    webOutput("📊 Status: {$stats['up_checks']} UP, {$stats['down_checks']} DOWN");
     webOutput("🚨 Open incidents: {$stats['open_incidents']}");
     webOutput("📋 Total results stored: {$stats['total_results']}");
     
@@ -202,13 +133,13 @@ try {
         $timeUntil = $nextTime - time();
         
         if ($timeUntil <= 0) {
-            $timeDisplay = "⏰ OVERDUE";
+            $timeDisplay = "⏰ DUE NOW";
         } elseif ($timeUntil < 60) {
             $timeDisplay = "⏱️  in {$timeUntil}s";
         } elseif ($timeUntil < 3600) {
             $timeDisplay = "⏱️  in " . floor($timeUntil / 60) . "m";
         } else {
-            $timeDisplay = "️  in " . floor($timeUntil / 3600) . "h";
+            $timeDisplay = "⏱️  in " . floor($timeUntil / 3600) . "h";
         }
         
         webOutput("  • {$check['name']}: {$check['next_run_at']} {$timeDisplay}");
@@ -220,7 +151,7 @@ try {
     
 } catch (Exception $e) {
     webOutput("");
-    webOutput(" ERROR: " . $e->getMessage());
+    webOutput("❌ ERROR: " . $e->getMessage());
     webOutput("Stack trace:");
     webOutput($e->getTraceAsString());
     
