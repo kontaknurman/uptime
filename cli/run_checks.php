@@ -1,7 +1,7 @@
 #!/usr/bin/env php
 <?php
 /**
- * Script to run uptime checks
+ * Script to run uptime checks - Simplified Version
  * Usage: 
  * - CLI: php cli/run_checks.php
  * - Web: http://yoursite.com/cli/run_checks.php?key=your_secret_key
@@ -49,76 +49,134 @@ function output($message) {
 }
 
 try {
-    output("Starting check runner");
+    output("=== UPTIME MONITOR CHECK RUNNER ===");
+    output("Started " . ($isCLI ? "via CLI" : "via web interface"));
     
     // Initialize emailer if SMTP is configured
     $emailer = null;
     if (!empty($config['smtp']['host']) && !empty($config['smtp']['username'])) {
         $emailer = new Emailer($config);
-        output("SMTP configured - alerts will be sent");
+        output("✅ SMTP configured - alerts will be sent");
     } else {
-        output("WARNING: SMTP not configured - alerts will not be sent");
+        output("⚠️  SMTP not configured - alerts will not be sent");
     }
     
-    // Initialize check runner
-    $runner = new CheckRunner($db, $config, $emailer);
-    
-    // Get list of due checks before execution
+    // Get checks due for execution (simple query)
     $dueChecks = $db->fetchAll(
-        'SELECT id, name, url FROM checks WHERE enabled = 1 AND next_run_at <= NOW() ORDER BY next_run_at ASC'
+        'SELECT id, name, url, next_run_at, interval_seconds FROM checks 
+         WHERE enabled = 1 AND next_run_at <= NOW() 
+         ORDER BY next_run_at ASC'
     );
     
-    if (empty($dueChecks)) {
-        output("No checks due for execution");
-    } else {
-        output("Found " . count($dueChecks) . " checks due for execution:");
+    $checkCount = count($dueChecks);
+    output("Found {$checkCount} checks due for execution");
+    
+    if ($checkCount > 0) {
+        output("Checks to execute:");
         foreach ($dueChecks as $check) {
-            output("  - {$check['name']} ({$check['url']})");
+            $timeUntilRun = strtotime($check['next_run_at']) - time();
+            $status = $timeUntilRun <= 0 ? "DUE NOW" : "in {$timeUntilRun}s";
+            output("  • {$check['name']} - {$check['url']} ({$status})");
+        }
+        output("");
+    }
+    
+    // Initialize and run checks
+    $runner = new CheckRunner($db, $config, $emailer);
+    
+    output("Starting check execution...");
+    $startTime = microtime(true);
+    
+    $executed = $runner->runDueChecks();
+    
+    $duration = round((microtime(true) - $startTime) * 1000);
+    output("✅ Successfully executed {$executed} checks in {$duration}ms");
+    
+    // Show results of executed checks
+    if ($executed > 0) {
+        output("");
+        output("Recent check results:");
+        $recentResults = $db->fetchAll(
+            "SELECT c.name, cr.http_status, cr.duration_ms, cr.is_up, cr.started_at, cr.error_message
+             FROM check_results cr 
+             JOIN checks c ON cr.check_id = c.id 
+             WHERE cr.started_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+             ORDER BY cr.started_at DESC LIMIT 10"
+        );
+        
+        foreach ($recentResults as $result) {
+            $status = $result['is_up'] ? '✅ UP' : '❌ DOWN';
+            $latency = $result['duration_ms'] . 'ms';
+            $error = $result['error_message'] ? " | Error: " . substr($result['error_message'], 0, 50) : '';
+            output("  • {$result['name']}: {$status} (HTTP {$result['http_status']}, {$latency}){$error}");
         }
     }
     
-    // Run due checks
-    $executed = $runner->runDueChecks();
-    
-    output("Successfully executed {$executed} checks");
-    
-    // Clean up old results (keep last 7 days)
+    // Cleanup old results
+    output("");
+    output("Cleaning up old results...");
     $cleanupSql = "DELETE FROM check_results WHERE started_at < DATE_SUB(NOW(), INTERVAL 7 DAY)";
     $cleaned = $db->query($cleanupSql)->rowCount();
     
     if ($cleaned > 0) {
-        output("Cleaned up {$cleaned} old result records");
+        output("🧹 Cleaned up {$cleaned} old result records");
+    } else {
+        output("🧹 No old records to clean");
     }
     
-    // Show summary statistics
-    $totalChecks = $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1");
-    $upChecks = $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'UP'");
-    $downChecks = $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'DOWN'");
-    $openIncidents = $db->fetchColumn("SELECT COUNT(*) FROM incidents WHERE status = 'OPEN'");
+    // Summary statistics
+    output("");
+    output("=== SYSTEM SUMMARY ===");
     
-    output("Summary: {$totalChecks} total checks, {$upChecks} UP, {$downChecks} DOWN, {$openIncidents} open incidents");
+    $stats = [
+        'total_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks"),
+        'enabled_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1"),
+        'up_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'UP'"),
+        'down_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'DOWN'"),
+        'open_incidents' => $db->fetchColumn("SELECT COUNT(*) FROM incidents WHERE status = 'OPEN'"),
+        'total_results' => $db->fetchColumn("SELECT COUNT(*) FROM check_results"),
+    ];
     
-    // Show next check times
+    output("📊 Total checks: {$stats['total_checks']} ({$stats['enabled_checks']} enabled)");
+    output("📊 Status: {$stats['up_checks']} UP, {$stats['down_checks']} DOWN");
+    output("🚨 Open incidents: {$stats['open_incidents']}");
+    output("📋 Total results stored: {$stats['total_results']}");
+    
+    // Next check schedule
+    output("");
+    output("=== UPCOMING CHECKS ===");
     $nextChecks = $db->fetchAll(
         "SELECT name, next_run_at FROM checks WHERE enabled = 1 ORDER BY next_run_at ASC LIMIT 5"
     );
     
-    if (!empty($nextChecks)) {
-        output("Next checks due:");
-        foreach ($nextChecks as $check) {
-            $timeUntil = strtotime($check['next_run_at']) - time();
-            $timeDisplay = $timeUntil > 0 ? "in " . floor($timeUntil / 60) . "m" : "overdue";
-            output("  - {$check['name']}: {$check['next_run_at']} ({$timeDisplay})");
+    foreach ($nextChecks as $check) {
+        $nextTime = strtotime($check['next_run_at']);
+        $timeUntil = $nextTime - time();
+        
+        if ($timeUntil <= 0) {
+            $timeDisplay = "⏰ DUE NOW";
+        } elseif ($timeUntil < 60) {
+            $timeDisplay = "⏱️  in {$timeUntil}s";
+        } elseif ($timeUntil < 3600) {
+            $timeDisplay = "⏱️  in " . floor($timeUntil / 60) . "m";
+        } else {
+            $timeDisplay = "⏱️  in " . floor($timeUntil / 3600) . "h";
         }
+        
+        output("  • {$check['name']}: {$check['next_run_at']} {$timeDisplay}");
     }
     
-    output("Check runner completed successfully");
+    output("");
+    output("✅ Check runner completed successfully!");
+    output("Execution completed at: " . date('Y-m-d H:i:s T'));
     
 } catch (Exception $e) {
-    $errorMsg = "ERROR: " . $e->getMessage();
-    output($errorMsg);
-    error_log($errorMsg);
+    output("");
+    output("❌ ERROR: " . $e->getMessage());
+    output("Stack trace:");
+    output($e->getTraceAsString());
     
+    error_log("Check runner error: " . $e->getMessage());
     if (!$isCLI) {
         http_response_code(500);
     }
@@ -126,9 +184,11 @@ try {
 }
 
 if (!$isCLI) {
-    echo "\n---\nExecution completed at " . date('Y-m-d H:i:s') . "\n";
-    echo "You can bookmark this URL for manual check execution:\n";
-    echo "https://{$_SERVER['HTTP_HOST']}{$_SERVER['REQUEST_URI']}\n";
+    output("");
+    output("=== USEFUL LINKS ===");
+    output("Dashboard: https://{$_SERVER['HTTP_HOST']}/dashboard.php");
+    output("Reports: https://{$_SERVER['HTTP_HOST']}/reports.php");
+    output("Run checks again: https://{$_SERVER['HTTP_HOST']}{$_SERVER['REQUEST_URI']}");
 }
 
 exit(0);
