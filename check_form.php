@@ -5,6 +5,15 @@ $checkId = $_GET['id'] ?? null;
 $check = null;
 $errors = [];
 
+// Get all categories for dropdown
+$categories = [];
+try {
+    $categories = $db->fetchAll('SELECT id, name, color FROM categories ORDER BY name ASC');
+} catch (Exception $e) {
+    // Categories table might not exist yet
+    error_log("Categories query failed: " . $e->getMessage());
+}
+
 // Load existing check for editing
 if ($checkId) {
     $check = $db->fetchOne('SELECT * FROM checks WHERE id = ?', [$checkId]);
@@ -16,6 +25,7 @@ if ($checkId) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Validate and sanitize input
     $name = Auth::sanitizeInput($_POST['name'] ?? '');
+    $categoryId = !empty($_POST['category_id']) ? (int)$_POST['category_id'] : null;
     $url = Auth::validateUrl($_POST['url'] ?? '');
     $method = in_array($_POST['method'] ?? '', ['GET', 'POST']) ? $_POST['method'] : 'GET';
     $requestBody = Auth::sanitizeInput($_POST['request_body'] ?? '');
@@ -48,6 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($errors)) {
         $data = [
             'name' => $name,
+            'category_id' => $categoryId,
             'url' => $url,
             'method' => $method,
             'request_body' => $requestBody,
@@ -88,6 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Default values - ensure no null values
 $formData = $check ?: [
     'name' => '',
+    'category_id' => null,
     'url' => '',
     'method' => 'GET',
     'request_body' => '',
@@ -103,7 +115,7 @@ $formData = $check ?: [
 
 // Ensure all form data values are strings (not null)
 foreach ($formData as $key => $value) {
-    if ($value === null) {
+    if ($value === null && $key !== 'category_id') {
         $formData[$key] = '';
     }
 }
@@ -143,6 +155,34 @@ $content = '
             </div>
             
             <div>
+                <label for="category_id" class="block text-sm font-medium text-gray-700">Category</label>
+                <select id="category_id" name="category_id" 
+                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">';
+
+$content .= '<option value="">No Category</option>';
+
+if (!empty($categories)) {
+    foreach ($categories as $category) {
+        $selected = ($formData['category_id'] == $category['id']) ? ' selected' : '';
+        $content .= '<option value="' . $category['id'] . '"' . $selected . ' data-color="' . $category['color'] . '">' . 
+                    htmlspecialchars($category['name']) . '</option>';
+    }
+}
+
+$content .= '
+                </select>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label for="url" class="block text-sm font-medium text-gray-700">Target URL</label>
+                <input type="url" id="url" name="url" required
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                       value="' . htmlspecialchars($formData['url'] ?? '') . '">
+            </div>
+            
+            <div>
                 <label for="method" class="block text-sm font-medium text-gray-700">Method</label>
                 <select id="method" name="method" 
                         class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
@@ -150,13 +190,6 @@ $content = '
                     <option value="POST"' . ($formData['method'] === 'POST' ? ' selected' : '') . '>POST</option>
                 </select>
             </div>
-        </div>
-
-        <div>
-            <label for="url" class="block text-sm font-medium text-gray-700">Target URL</label>
-            <input type="url" id="url" name="url" required
-                   class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                                          value="' . htmlspecialchars($formData['url'] ?? '') . '">
         </div>
 
         <div id="request-body-field" style="display: ' . ($formData['method'] === 'POST' ? 'block' : 'none') . '">
@@ -252,6 +285,17 @@ $content .= '
 document.getElementById("method").addEventListener("change", function() {
     const requestBodyField = document.getElementById("request-body-field");
     requestBodyField.style.display = this.value === "POST" ? "block" : "none";
+});
+
+// Visual feedback for category selection
+document.getElementById("category_id").addEventListener("change", function() {
+    const selectedOption = this.options[this.selectedIndex];
+    const color = selectedOption.getAttribute("data-color");
+    if (color) {
+        this.style.borderColor = color;
+    } else {
+        this.style.borderColor = "#D1D5DB";
+    }
 });
 </script>';
 
