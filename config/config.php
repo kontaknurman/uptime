@@ -13,19 +13,19 @@ return [
     ],
     
     'smtp' => [
-        'host' => $_ENV['SMTP_HOST'] ?? 'smtp.gmail.com',
+        'host' => $_ENV['SMTP_HOST'] ?? 'mail.smtp2go.com',
         'port' => $_ENV['SMTP_PORT'] ?? 587,
-        'username' => $_ENV['SMTP_USER'] ?? '',
-        'password' => $_ENV['SMTP_PASS'] ?? '',
+        'username' => $_ENV['SMTP_USER'] ?? 'audiensi.com',
+        'password' => $_ENV['SMTP_PASS'] ?? 'ujZwa4wwMGplexZl',
         'encryption' => $_ENV['SMTP_ENCRYPTION'] ?? 'tls', // tls, ssl, or ''
-        'from_email' => $_ENV['FROM_EMAIL'] ?? 'uptime@example.com',
-        'from_name' => $_ENV['FROM_NAME'] ?? 'Uptime Monitor'
+        'from_email' => $_ENV['FROM_EMAIL'] ?? 'alert@audiensi.com',
+        'from_name' => $_ENV['FROM_NAME'] ?? 'Audiensi Notif'
     ],
     
     'app' => [
         'timezone' => $_ENV['TIMEZONE'] ?? 'Asia/Jakarta',
         'base_url' => $_ENV['BASE_URL'] ?? 'https://test2.audiensi.com',
-        'session_lifetime' => 3600, // 1 hour
+        'session_lifetime' => 3600000, // 1 hour
         'max_body_sample' => 2048, // bytes
         'default_timeout' => 30,
         'max_redirects' => 5
