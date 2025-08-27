@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: localhost
--- Generation Time: Aug 27, 2025 at 10:24 AM
+-- Generation Time: Aug 27, 2025 at 11:43 AM
 -- Server version: 10.3.39-MariaDB-0ubuntu0.20.04.2
 -- PHP Version: 8.0.30
 
@@ -24,12 +24,44 @@ SET time_zone = "+00:00";
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `categories`
+--
+
+CREATE TABLE `categories` (
+  `id` int(11) NOT NULL,
+  `name` varchar(50) NOT NULL,
+  `color` varchar(7) DEFAULT '#6B7280',
+  `icon` varchar(50) DEFAULT 'folder',
+  `description` text DEFAULT NULL,
+  `checks_count` int(11) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
+
+--
+-- Dumping data for table `categories`
+--
+
+INSERT INTO `categories` (`id`, `name`, `color`, `icon`, `description`, `checks_count`, `created_at`, `updated_at`) VALUES
+(1, 'Production', '#10B981', 'server', 'Production environment services', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(2, 'Staging', '#F59E0B', 'test-tube', 'Staging and testing services', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(3, 'Development', '#3B82F6', 'code', 'Development environment services', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(4, 'API', '#8B5CF6', 'api', 'API endpoints and webhooks', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(5, 'Website', '#EC4899', 'globe', 'Website and web applications', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(6, 'Database', '#EF4444', 'database', 'Database and data services', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(7, 'Third Party', '#6B7280', 'external-link', 'External third-party services', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44'),
+(8, 'Monitoring', '#14B8A6', 'activity', 'Monitoring and health check endpoints', 0, '2025-08-27 10:53:44', '2025-08-27 10:53:44');
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `checks`
 --
 
 CREATE TABLE `checks` (
   `id` int(11) NOT NULL,
   `name` varchar(255) NOT NULL,
+  `category_id` int(11) DEFAULT NULL,
   `url` text NOT NULL,
   `method` enum('GET','POST') DEFAULT 'GET',
   `request_body` text DEFAULT NULL,
@@ -51,9 +83,9 @@ CREATE TABLE `checks` (
 -- Dumping data for table `checks`
 --
 
-INSERT INTO `checks` (`id`, `name`, `url`, `method`, `request_body`, `request_headers`, `expected_status`, `expected_headers`, `interval_seconds`, `timeout_seconds`, `max_redirects`, `alert_emails`, `enabled`, `last_state`, `created_at`, `updated_at`, `next_run_at`) VALUES
-(2, 'Test Check - Google', 'https://www.googlefffff.com', 'GET', '', '', 200, '', 300, 30, 5, 'admin@example.com', 1, 'DOWN', '2025-08-27 08:37:58', '2025-08-27 10:06:21', '2025-08-27 17:11:21'),
-(4, 'Topupgim', 'https://topupgim.com/', 'GET', '', '', 200, '', 60, 30, 5, '', 1, 'UP', '2025-08-27 08:57:23', '2025-08-27 10:06:21', '2025-08-27 17:07:21');
+INSERT INTO `checks` (`id`, `name`, `category_id`, `url`, `method`, `request_body`, `request_headers`, `expected_status`, `expected_headers`, `interval_seconds`, `timeout_seconds`, `max_redirects`, `alert_emails`, `enabled`, `last_state`, `created_at`, `updated_at`, `next_run_at`) VALUES
+(2, 'Test Check - Google', NULL, 'https://www.google.com', 'GET', '', '', 200, '', 300, 30, 5, 'admin@example.com', 1, 'UP', '2025-08-27 08:37:58', '2025-08-27 11:40:38', '2025-08-27 18:45:38'),
+(4, 'Topupgim', NULL, 'https://topupgim.com/', 'GET', '', '', 200, '', 60, 30, 5, '', 1, 'UP', '2025-08-27 08:57:23', '2025-08-27 11:40:38', '2025-08-27 18:41:38');
 
 -- --------------------------------------------------------
 
@@ -84,7 +116,12 @@ INSERT INTO `check_results` (`id`, `check_id`, `started_at`, `ended_at`, `durati
 (3, 4, '2025-08-27 16:29:59', '2025-08-27 16:29:59', 438, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL),
 (4, 4, '2025-08-27 16:32:05', '2025-08-27 16:32:05', 339, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL),
 (5, 2, '2025-08-27 17:06:21', '2025-08-27 17:06:21', 45, 0, '{}', '', 0, 'Could not resolve host: www.googlefffff.com'),
-(6, 4, '2025-08-27 17:06:21', '2025-08-27 17:06:21', 362, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL);
+(6, 4, '2025-08-27 17:06:21', '2025-08-27 17:06:21', 362, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL),
+(7, 2, '2025-08-27 17:45:10', '2025-08-27 17:45:10', 41, 0, '{}', '', 0, NULL),
+(8, 4, '2025-08-27 17:45:10', '2025-08-27 17:45:10', 350, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL),
+(9, 4, '2025-08-27 17:46:12', '2025-08-27 17:46:12', 290, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL),
+(10, 2, '2025-08-27 18:40:38', '2025-08-27 18:40:38', 201, 200, '{}', '<!doctype html><html itemscope=\"\" itemtype=\"http://schema.org/WebPage\" lang=\"de\"><head><meta content=\"text/html; charset=UTF-8\" http-equiv=\"Content-Type\"><meta content=\"/images/branding/googleg/1x/googleg_standard_color_128dp.png\" itemprop=\"image\"><title>Google</title><script nonce=\"l1dWnrfrwLqG6DX44sM0Dw\">(function(){var _g={kEI:\'uu6uaMbrF9fCp84P0YLj0Q4\',kEXPI:\'0,202854,2,3497452,1076,538661,48791,30022,16105,344796,238458,51586,5230292,11389,623,36812020,25228681,119775,18493,14109,22918,42250,6757,23879,9139,4599,328,6226,63401,764,15049,8204,899,6531,58713,10900,1,37375,624,5308,353,18880,5870,1878,1,2,1,2,5830,5774,18858,2785,5968,16524,6251,35,3420,13484,2448,9659,5683,3604,7836,9936,1516,17764,1901,2,1596,726,3,11077,566,1188,3615,203,1020,1,4364,2,3287,7,479,1491,1033,1579,4517,1323,1728,3,4011,3018,2646,101,2,4,1,321,1190,627,2295,990,667,5183,459,5,870,6500,355,3266,1410,7965,5765,287,1281,405,185,4,259,1119,136,578,2466,311,195,341,520,2302,542,360,194,2,222,1,1331,2,1347,51', 1, NULL),
+(11, 4, '2025-08-27 18:40:38', '2025-08-27 18:40:38', 418, 200, '{}', '<!doctype html>\n<html lang=\"id-ID\">\n\n<head>\n    <meta charset=\"utf-8\" />\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, shrink-to-fit=no\" />\n    \n    <!-- Title Of Site -->\n    <!-- HTML Meta Tags -->\n    <title>TopUpGim - Top Up Game Murah dan Instan</title>\n    <meta name=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\" />\n    \n    <!-- Google / Search Engine Tags -->\n    <meta itemprop=\"name\" content=\"TopUpGim - Top Up Game Murah dan Instan\">\n    <meta itemprop=\"description\" content=\"TopUpGim adalah situs Top Up Game resmi dengan harga termurah. Top Up Game Mobile Legends, Free Fire, Honor of Kings, dan ratusan game lainnya lebih hemat di TopUpGim!\">\n    <meta itemprop=\"image\" content=\"https://cdn.topupgim.com/assets/media/favicons/site-thumbnail.png\">\n    \n ', 1, NULL);
 
 -- --------------------------------------------------------
 
@@ -146,12 +183,20 @@ INSERT INTO `users` (`id`, `email`, `password_hash`, `created_at`) VALUES
 --
 
 --
+-- Indexes for table `categories`
+--
+ALTER TABLE `categories`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `name` (`name`);
+
+--
 -- Indexes for table `checks`
 --
 ALTER TABLE `checks`
   ADD PRIMARY KEY (`id`),
   ADD KEY `idx_enabled_next_run` (`enabled`,`next_run_at`),
-  ADD KEY `idx_last_state` (`last_state`);
+  ADD KEY `idx_last_state` (`last_state`),
+  ADD KEY `idx_category` (`category_id`);
 
 --
 -- Indexes for table `check_results`
@@ -189,6 +234,12 @@ ALTER TABLE `users`
 --
 
 --
+-- AUTO_INCREMENT for table `categories`
+--
+ALTER TABLE `categories`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
+
+--
 -- AUTO_INCREMENT for table `checks`
 --
 ALTER TABLE `checks`
@@ -198,7 +249,7 @@ ALTER TABLE `checks`
 -- AUTO_INCREMENT for table `check_results`
 --
 ALTER TABLE `check_results`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=12;
 
 --
 -- AUTO_INCREMENT for table `incidents`
@@ -221,6 +272,12 @@ ALTER TABLE `users`
 --
 -- Constraints for dumped tables
 --
+
+--
+-- Constraints for table `checks`
+--
+ALTER TABLE `checks`
+  ADD CONSTRAINT `checks_ibfk_1` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE SET NULL;
 
 --
 -- Constraints for table `check_results`
