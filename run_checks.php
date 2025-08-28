@@ -1,131 +1,245 @@
 <?php
 /**
- * Web-accessible check runner - Simplified Version
- * URL: http://yoursite.com/run_checks.php?key=your_secret_key
+ * Universal check runner - Works from both CLI and Web
+ * CLI: php cli/run_checks.php
+ * Web: https://yoursite.com/run_checks.php?key=nurman
  */
 
-require_once 'bootstrap.php';
+// Detect if running from web or CLI
+$isWeb = php_sapi_name() !== 'cli';
+$baseDir = $isWeb ? __DIR__ : __DIR__ . '/..';
 
-// Security check - require secret key
-$secretKey = 'nurman'; // Change this!
-$providedKey = $_GET['key'] ?? '';
+// Load bootstrap
+require_once $baseDir . '/bootstrap.php';
 
-if (empty($providedKey) || !hash_equals($secretKey, $providedKey)) {
-    http_response_code(403);
-    die('Access denied. This endpoint requires a valid key parameter.');
-}
-
-// Set headers for plain text output
-header('Content-Type: text/plain');
-set_time_limit(300); // 5 minutes max
-
-// Function to output with timestamp
-function webOutput($message) {
-    echo "[" . date('Y-m-d H:i:s') . "] " . $message . "\n";
-    ob_flush();
-    flush();
-}
-
-try {
-    webOutput("=== UPTIME MONITOR CHECK RUNNER ===");
-    webOutput("Started via web interface");
+// Web access security check
+if ($isWeb) {
+    $secretKey = 'nurman'; // Change this to something more secure!
+    $providedKey = $_GET['key'] ?? '';
     
-    // Initialize emailer if SMTP is configured
-    $emailer = null;
-    if (!empty($config['smtp']['host']) && !empty($config['smtp']['username'])) {
-        $emailer = new Emailer($config);
-        webOutput("✅ SMTP configured - alerts will be sent");
-    } else {
-        webOutput("⚠️  SMTP not configured - alerts will not be sent");
+    if (empty($providedKey) || !hash_equals($secretKey, $providedKey)) {
+        http_response_code(403);
+        die('Access denied. This endpoint requires a valid key parameter.');
     }
     
-    // Get checks due for execution - simple query
+    // Set headers for plain text output
+    header('Content-Type: text/plain; charset=UTF-8');
+    ob_implicit_flush(true);
+    ob_end_flush();
+}
+
+// Set execution time limit
+set_time_limit(300); // 5 minutes
+
+// Output function that works for both CLI and Web
+function output($message) {
+    global $isWeb;
+    
+    $timestamp = date('Y-m-d H:i:s');
+    $output = "[{$timestamp}] {$message}\n";
+    
+    if ($isWeb) {
+        echo $output;
+        if (ob_get_level() > 0) {
+            ob_flush();
+        }
+        flush();
+    } else {
+        echo $output;
+    }
+}
+
+// Main execution
+try {
+    output("=== UPTIME MONITOR CHECK RUNNER ===");
+    output("Started via " . ($isWeb ? "web interface" : "CLI"));
+    
+    // Initialize emailer with SMTP2GO if configured
+    $emailer = null;
+    $emailerStatus = "disabled";
+    
+    // Check for SMTP2GO configuration first
+    if (!empty($config['smtp2go']['api_key']) && $config['smtp2go']['api_key'] !== 'api-YOUR_API_KEY_HERE') {
+        try {
+            $emailer = new Emailer($config);
+            output("Testing SMTP2GO connection...");
+            
+            $testResult = $emailer->test();
+            if ($testResult['authentication']) {
+                $emailerStatus = "SMTP2GO";
+                output("✅ SMTP2GO API configured and authenticated - alerts enabled");
+            } else {
+                output("⚠️ SMTP2GO API key invalid - alerts disabled");
+                if (!empty($testResult['errors'])) {
+                    foreach ($testResult['errors'] as $error) {
+                        output("  Error: {$error}");
+                    }
+                }
+                $emailer = null;
+            }
+        } catch (Exception $e) {
+            output("⚠️ Failed to initialize SMTP2GO: " . $e->getMessage());
+            $emailer = null;
+        }
+    } else {
+        output("⚠️ SMTP2GO not configured - alerts disabled");
+        output("  To enable: Add your API key to config/config.php");
+    }
+    
+    // Get checks due for execution
+    output("");
+    output("Checking for due checks...");
+    
     $dueChecks = $db->fetchAll(
-        'SELECT id, name, url, next_run_at, interval_seconds FROM checks 
+        'SELECT * FROM checks 
          WHERE enabled = 1 AND next_run_at <= NOW() 
          ORDER BY next_run_at ASC'
     );
     
-    webOutput("Found " . count($dueChecks) . " checks due for execution");
+    output("Found " . count($dueChecks) . " check(s) due for execution");
     
     if (!empty($dueChecks)) {
-        webOutput("Checks to execute:");
+        output("");
+        output("Checks to execute:");
         foreach ($dueChecks as $check) {
             $nextTime = strtotime($check['next_run_at']);
             $timeDiff = time() - $nextTime;
-            $status = $timeDiff >= 0 ? "DUE NOW" : "in " . abs($timeDiff) . "s";
+            $overdue = $timeDiff > 0 ? "overdue by " . $timeDiff . "s" : "due now";
+            $alerts = !empty($check['alert_emails']) ? " [Alerts: ON]" : " [Alerts: OFF]";
             
-            webOutput("  • {$check['name']} - {$check['url']} ({$status})");
+            output("  • {$check['name']} - {$check['url']} ({$overdue}){$alerts}");
         }
-        webOutput("");
     }
     
-    // Initialize and run checks
+    // Check if any checks have alert emails configured
+    if ($emailer) {
+        $checksWithAlerts = $db->fetchOne(
+            "SELECT COUNT(*) as count FROM checks 
+             WHERE enabled = 1 AND alert_emails IS NOT NULL AND alert_emails != ''"
+        );
+        
+        if ($checksWithAlerts && $checksWithAlerts['count'] > 0) {
+            output("");
+            output("📧 {$checksWithAlerts['count']} check(s) have alert emails configured");
+        } else {
+            output("");
+            output("⚠️ No checks have alert emails configured - no alerts will be sent");
+        }
+    }
+    
+    // Initialize CheckRunner
     $runner = new CheckRunner($db, $config, $emailer);
     
-    webOutput("Starting check execution...");
+    output("");
+    output("Starting check execution...");
     $startTime = microtime(true);
     
+    // Run the checks using the correct method
     $executed = $runner->runDueChecks();
     
     $duration = round((microtime(true) - $startTime) * 1000);
-    webOutput("✅ Successfully executed {$executed} checks in {$duration}ms");
+    output("✅ Executed {$executed} check(s) in {$duration}ms");
     
     // Show results of executed checks
     if ($executed > 0) {
-        webOutput("");
-        webOutput("Recent check results:");
+        output("");
+        output("Check results:");
+        
         $recentResults = $db->fetchAll(
-            "SELECT c.name, cr.http_status, cr.duration_ms, cr.is_up, cr.started_at, cr.error_message
+            "SELECT c.name, c.url, cr.http_status, cr.duration_ms, cr.is_up, 
+                    cr.started_at, cr.error_message
              FROM check_results cr 
              JOIN checks c ON cr.check_id = c.id 
              WHERE cr.started_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
-             ORDER BY cr.started_at DESC LIMIT 10"
+             ORDER BY cr.started_at DESC 
+             LIMIT 10"
         );
         
         foreach ($recentResults as $result) {
             $status = $result['is_up'] ? '✅ UP' : '❌ DOWN';
             $latency = $result['duration_ms'] . 'ms';
-            $error = $result['error_message'] ? " | Error: " . substr($result['error_message'], 0, 50) : '';
-            webOutput("  • {$result['name']}: {$status} (HTTP {$result['http_status']}, {$latency}){$error}");
+            $httpCode = $result['http_status'] > 0 ? "HTTP {$result['http_status']}" : "No response";
+            
+            $message = "  • {$result['name']}: {$status} ({$httpCode}, {$latency})";
+            
+            if (!$result['is_up'] && $result['error_message']) {
+                $error = substr($result['error_message'], 0, 80);
+                $message .= "\n    Error: {$error}";
+            }
+            
+            output($message);
         }
     }
     
-    // Cleanup old results
-    webOutput("");
-    webOutput("Cleaning up old results...");
-    $cleanupSql = "DELETE FROM check_results WHERE started_at < DATE_SUB(NOW(), INTERVAL 7 DAY)";
-    $cleaned = $db->query($cleanupSql)->rowCount();
+    // Check for open incidents
+    output("");
+    output("=== INCIDENT STATUS ===");
     
-    if ($cleaned > 0) {
-        webOutput("🧹 Cleaned up {$cleaned} old result records");
+    $openIncidents = $db->fetchAll(
+        "SELECT i.*, c.name as check_name, c.alert_emails 
+         FROM incidents i 
+         JOIN checks c ON i.check_id = c.id 
+         WHERE i.status = 'OPEN' 
+         ORDER BY i.started_at DESC"
+    );
+    
+    if (empty($openIncidents)) {
+        output("✅ No open incidents");
     } else {
-        webOutput("🧹 No old records to clean");
+        output("🚨 " . count($openIncidents) . " open incident(s):");
+        foreach ($openIncidents as $incident) {
+            $duration = time() - strtotime($incident['started_at']);
+            $durationStr = $duration < 3600 ? 
+                floor($duration / 60) . " minutes" : 
+                floor($duration / 3600) . " hours";
+            
+            $alertStatus = !empty($incident['alert_emails']) ? "alerts sent" : "no alerts";
+            output("  • {$incident['check_name']} - DOWN for {$durationStr} ({$alertStatus})");
+        }
+    }
+    
+    // Cleanup old results (optional)
+    if ($isWeb || !empty($_GET['cleanup'])) {
+        output("");
+        output("Cleaning up old results...");
+        
+        $cleaned = $db->query(
+            "DELETE FROM check_results 
+             WHERE started_at < DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        )->rowCount();
+        
+        if ($cleaned > 0) {
+            output("🧹 Cleaned {$cleaned} old result records");
+        }
     }
     
     // Summary statistics
-    webOutput("");
-    webOutput("=== SYSTEM SUMMARY ===");
+    output("");
+    output("=== SYSTEM SUMMARY ===");
     
     $stats = [
-        'total_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks"),
-        'enabled_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1"),
-        'up_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'UP'"),
-        'down_checks' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'DOWN'"),
-        'open_incidents' => $db->fetchColumn("SELECT COUNT(*) FROM incidents WHERE status = 'OPEN'"),
-        'total_results' => $db->fetchColumn("SELECT COUNT(*) FROM check_results"),
+        'total' => $db->fetchColumn("SELECT COUNT(*) FROM checks"),
+        'enabled' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1"),
+        'up' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'UP'"),
+        'down' => $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE enabled = 1 AND last_state = 'DOWN'"),
+        'incidents' => $db->fetchColumn("SELECT COUNT(*) FROM incidents WHERE status = 'OPEN'"),
     ];
     
-    webOutput("📊 Total checks: {$stats['total_checks']} ({$stats['enabled_checks']} enabled)");
-    webOutput("📊 Status: {$stats['up_checks']} UP, {$stats['down_checks']} DOWN");
-    webOutput("🚨 Open incidents: {$stats['open_incidents']}");
-    webOutput("📋 Total results stored: {$stats['total_results']}");
+    output("📊 Checks: {$stats['total']} total, {$stats['enabled']} enabled");
+    output("📊 Status: {$stats['up']} UP, {$stats['down']} DOWN");
+    output("🚨 Open incidents: {$stats['incidents']}");
+    output("📧 Alert system: {$emailerStatus}");
     
-    // Next check schedule
-    webOutput("");
-    webOutput("=== UPCOMING CHECKS ===");
+    // Show next scheduled checks
+    output("");
+    output("=== NEXT SCHEDULED CHECKS ===");
+    
     $nextChecks = $db->fetchAll(
-        "SELECT name, next_run_at FROM checks WHERE enabled = 1 ORDER BY next_run_at ASC LIMIT 5"
+        "SELECT name, url, next_run_at, interval_seconds 
+         FROM checks 
+         WHERE enabled = 1 
+         ORDER BY next_run_at ASC 
+         LIMIT 5"
     );
     
     foreach ($nextChecks as $check) {
@@ -133,34 +247,52 @@ try {
         $timeUntil = $nextTime - time();
         
         if ($timeUntil <= 0) {
-            $timeDisplay = "⏰ DUE NOW";
+            $timeStr = "DUE NOW";
         } elseif ($timeUntil < 60) {
-            $timeDisplay = "⏱️  in {$timeUntil}s";
+            $timeStr = "in {$timeUntil}s";
         } elseif ($timeUntil < 3600) {
-            $timeDisplay = "⏱️  in " . floor($timeUntil / 60) . "m";
+            $timeStr = "in " . floor($timeUntil / 60) . "m";
         } else {
-            $timeDisplay = "⏱️  in " . floor($timeUntil / 3600) . "h";
+            $timeStr = "in " . floor($timeUntil / 3600) . "h";
         }
         
-        webOutput("  • {$check['name']}: {$check['next_run_at']} {$timeDisplay}");
+        output("  • {$check['name']}: {$timeStr}");
     }
     
-    webOutput("");
-    webOutput("✅ Check runner completed successfully!");
-    webOutput("Execution completed at: " . date('Y-m-d H:i:s T'));
+    output("");
+    output("✅ Check runner completed successfully!");
+    output("Completed at: " . date('Y-m-d H:i:s T'));
+    
+    // Web-specific output
+    if ($isWeb) {
+        output("");
+        output("=== USEFUL LINKS ===");
+        $baseUrl = "https://{$_SERVER['HTTP_HOST']}";
+        output("Dashboard: {$baseUrl}/dashboard.php");
+        output("Test Alerts: {$baseUrl}/test_alerts.php");
+        output("Test SMTP2GO: {$baseUrl}/test_smtp2go.php");
+        output("Run again: {$baseUrl}{$_SERVER['REQUEST_URI']}");
+        
+        output("");
+        output("=== CRON SETUP ===");
+        output("To automate checks, add this to crontab:");
+        output("*/1 * * * * curl -s '{$baseUrl}/run_checks.php?key={$secretKey}' > /dev/null");
+    }
+    
+    // Exit with appropriate code
+    exit(0);
     
 } catch (Exception $e) {
-    webOutput("");
-    webOutput("❌ ERROR: " . $e->getMessage());
-    webOutput("Stack trace:");
-    webOutput($e->getTraceAsString());
+    output("");
+    output("❌ FATAL ERROR: " . $e->getMessage());
+    output("Stack trace:");
+    output($e->getTraceAsString());
     
-    error_log("Web check runner error: " . $e->getMessage());
-    http_response_code(500);
+    error_log("Check runner error: " . $e->getMessage());
+    
+    if ($isWeb) {
+        http_response_code(500);
+    }
+    
+    exit(2);
 }
-
-webOutput("");
-webOutput("=== USEFUL LINKS ===");
-webOutput("Dashboard: https://{$_SERVER['HTTP_HOST']}/dashboard.php");
-webOutput("Reports: https://{$_SERVER['HTTP_HOST']}/reports.php");
-webOutput("Run checks again: https://{$_SERVER['HTTP_HOST']}{$_SERVER['REQUEST_URI']}");

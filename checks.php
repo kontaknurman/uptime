@@ -84,15 +84,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
-// Get all categories for display
+// Get all categories for display (updated query for multi-category support)
 $categories = [];
 try {
     $categories = $db->fetchAll("
         SELECT c.*, 
-               COUNT(ch.id) as active_checks_count,
-               SUM(CASE WHEN ch.last_state = 'DOWN' THEN 1 ELSE 0 END) as down_checks_count
+               COUNT(DISTINCT cc.check_id) as active_checks_count,
+               (SELECT COUNT(DISTINCT cc2.check_id) 
+                FROM check_categories cc2 
+                JOIN checks ch ON cc2.check_id = ch.id 
+                WHERE cc2.category_id = c.id AND ch.last_state = 'DOWN' AND ch.enabled = 1) as down_checks_count
         FROM categories c
-        LEFT JOIN checks ch ON c.id = ch.category_id AND ch.enabled = 1
+        LEFT JOIN check_categories cc ON c.id = cc.category_id
+        LEFT JOIN checks ch ON cc.check_id = ch.id AND ch.enabled = 1
         GROUP BY c.id
         ORDER BY c.name ASC
     ");
@@ -112,64 +116,52 @@ $whereClauses = [];
 $params = [];
 
 if ($statusFilter === 'up') {
-    $whereClauses[] = "last_state = 'UP'";
+    $whereClauses[] = "c.last_state = 'UP'";
 } elseif ($statusFilter === 'down') {
-    $whereClauses[] = "last_state = 'DOWN'";
+    $whereClauses[] = "c.last_state = 'DOWN'";
 } elseif ($statusFilter === 'enabled') {
-    $whereClauses[] = "enabled = 1";
+    $whereClauses[] = "c.enabled = 1";
 } elseif ($statusFilter === 'disabled') {
-    $whereClauses[] = "enabled = 0";
+    $whereClauses[] = "c.enabled = 0";
 }
 
 if (!empty($searchFilter)) {
-    $whereClauses[] = "(name LIKE ? OR url LIKE ?)";
+    $whereClauses[] = "(c.name LIKE ? OR c.url LIKE ?)";
     $params[] = "%{$searchFilter}%";
     $params[] = "%{$searchFilter}%";
 }
 
 if ($intervalFilter !== 'all') {
-    $whereClauses[] = "interval_seconds = ?";
+    $whereClauses[] = "c.interval_seconds = ?";
     $params[] = (int)$intervalFilter;
 }
 
 if ($categoryFilter !== 'all') {
     if ($categoryFilter === 'uncategorized') {
-        $whereClauses[] = "category_id IS NULL";
+        $whereClauses[] = "NOT EXISTS (SELECT 1 FROM check_categories WHERE check_id = c.id)";
     } else {
-        $whereClauses[] = "category_id = ?";
+        $whereClauses[] = "EXISTS (SELECT 1 FROM check_categories WHERE check_id = c.id AND category_id = ?)";
         $params[] = (int)$categoryFilter;
     }
 }
 
 $whereClause = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
 
-// Get checks with category info
+// Get checks with multiple categories
 $checksQuery = "
-    SELECT DISTINCT c.*, 
-           cat.name as category_name, 
-           cat.color as category_color,
-           cat.icon as category_icon
+    SELECT c.*, 
+           GROUP_CONCAT(DISTINCT cat.name ORDER BY cat.name SEPARATOR ', ') as category_names,
+           GROUP_CONCAT(DISTINCT cat.color ORDER BY cat.name SEPARATOR ',') as category_colors,
+           GROUP_CONCAT(DISTINCT cat.icon ORDER BY cat.name) as category_icons
     FROM checks c 
-    LEFT JOIN categories cat ON c.category_id = cat.id
+    LEFT JOIN check_categories cc ON c.id = cc.check_id
+    LEFT JOIN categories cat ON cc.category_id = cat.id
     {$whereClause} 
-    ORDER BY cat.name ASC, c.name ASC";
+    GROUP BY c.id
+    ORDER BY c.name ASC";
 
 try {
     $checks = $db->fetchAll($checksQuery, $params);
-    
-    // Remove any duplicate IDs just in case
-    $uniqueChecks = [];
-    $seenIds = [];
-    
-    foreach ($checks as $check) {
-        if (!in_array($check['id'], $seenIds)) {
-            $uniqueChecks[] = $check;
-            $seenIds[] = $check['id'];
-        }
-    }
-    
-    $checks = $uniqueChecks;
-    
 } catch (Exception $e) {
     $checks = [];
     error_log("Checks query failed: " . $e->getMessage());
@@ -296,7 +288,11 @@ if (!empty($categories)) {
     }
     
     // Add uncategorized option
-    $uncategorizedCount = $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE category_id IS NULL AND enabled = 1") ?: 0;
+    $uncategorizedCount = $db->fetchColumn("
+        SELECT COUNT(*) FROM checks c 
+        WHERE NOT EXISTS (SELECT 1 FROM check_categories WHERE check_id = c.id) 
+        AND c.enabled = 1
+    ") ?: 0;
     if ($uncategorizedCount > 0 || $categoryFilter === 'uncategorized') {
         $content .= '
         <a href="?category=uncategorized' . 
@@ -317,6 +313,7 @@ if (!empty($categories)) {
     </div>';
 }
 
+// Keep the rest of your existing UI exactly the same
 $content .= '
     <!-- Filters -->
     <div class="bg-white p-4 rounded-lg shadow">
@@ -380,7 +377,7 @@ $content .= '
         </form>
     </div>
 
-    <!-- Checks Table -->
+    <!-- Checks Table - Keep existing structure -->
     <form method="POST" id="checksForm">
         <input type="hidden" name="csrf_token" value="' . $auth->getCsrfToken() . '">
         
@@ -453,15 +450,20 @@ if (empty($checks)) {
         $incidentBadge = $check['open_incidents'] > 0 ? 
             '<span class="badge bg-red-100 text-red-800 ml-2">' . $check['open_incidents'] . ' incident(s)</span>' : '';
         
-        // Category badge
+        // Category badges - now supports multiple categories
         $categoryBadge = '';
-        if (!empty($check['category_name'])) {
-            $categoryBadge = '
-                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium" 
-                      style="background-color: ' . ($check['category_color'] ?? '#6B7280') . '20; 
-                             color: ' . ($check['category_color'] ?? '#6B7280') . ';">
-                    ' . htmlspecialchars($check['category_name']) . '
-                </span>';
+        if (!empty($check['category_names'])) {
+            $catNames = explode(', ', $check['category_names']);
+            $catColors = explode(',', $check['category_colors']);
+            
+            foreach ($catNames as $i => $catName) {
+                $color = trim($catColors[$i] ?? '#6B7280');
+                $categoryBadge .= '
+                    <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium mr-1" 
+                          style="background-color: ' . $color . '20; color: ' . $color . ';">
+                        ' . htmlspecialchars($catName) . '
+                    </span>';
+            }
         } else {
             $categoryBadge = '<span class="text-gray-400 text-sm">-</span>';
         }
@@ -496,6 +498,7 @@ if (empty($checks)) {
     }
 }
 
+// Keep all the existing JavaScript and modal exactly the same
 $content .= '
                     </tbody>
                 </table>
