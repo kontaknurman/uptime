@@ -1,91 +1,78 @@
 <?php
 /**
- * AJAX endpoint to get detailed check result data
- * File: get_result_details.php
+ * AJAX endpoint to fetch check result details
  */
 
 require_once 'bootstrap.php';
 
-// Set JSON response headers
+// Set JSON content type
 header('Content-Type: application/json');
 
+// Require authentication
+$auth->requireAuth();
+
+// Check if this is a GET request
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    http_response_code(405);
+    echo json_encode(['success' => false, 'error' => 'Method not allowed']);
+    exit;
+}
+
+// Get and validate result ID
+$resultId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+if (!$resultId) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Result ID is required']);
+    exit;
+}
+
 try {
-    // Security: Require authentication
-    $auth->requireAuth();
-    
-    $resultId = (int)($_GET['id'] ?? 0);
-    
-    if ($resultId <= 0) {
-        throw new Exception('Invalid result ID');
-    }
-    
-    // Get result details with check info for security validation
-    $result = $db->fetchOne(
-        'SELECT cr.*, c.name as check_name, c.url as check_url
-         FROM check_results cr 
-         JOIN checks c ON cr.check_id = c.id 
-         WHERE cr.id = ?',
-        [$resultId]
-    );
+    // Fetch the result details with all fields
+    $result = $db->fetchOne("
+        SELECT 
+            cr.*,
+            c.name as check_name,
+            c.url as check_url
+        FROM check_results cr
+        JOIN checks c ON cr.check_id = c.id
+        WHERE cr.id = ?
+    ", [$resultId]);
     
     if (!$result) {
-        throw new Exception('Result not found');
+        http_response_code(404);
+        echo json_encode(['success' => false, 'error' => 'Result not found']);
+        exit;
     }
     
-    // Format the response data
-    $responseData = [
-        'id' => $result['id'],
-        'check_id' => $result['check_id'],
-        'check_name' => $result['check_name'],
-        'check_url' => $result['check_url'],
-        'started_at' => $result['started_at'],
-        'ended_at' => $result['ended_at'],
-        'duration_ms' => (int)$result['duration_ms'],
-        'http_status' => (int)$result['http_status'],
-        'is_up' => (bool)$result['is_up'],
-        'error_message' => $result['error_message'],
-        'response_headers' => $result['response_headers'],
-        'body_sample' => $result['body_sample']
+    // Security check - ensure user has access to this result
+    // You might want to add additional permission checks here based on your auth system
+    
+    // Format the response - using correct column names from database schema
+    $response = [
+        'success' => true,
+        'result' => [
+            'id' => (int)$result['id'],
+            'check_id' => (int)$result['check_id'],
+            'check_name' => $result['check_name'],
+            'check_url' => $result['check_url'],
+            'started_at' => $result['started_at'],
+            'ended_at' => $result['ended_at'],
+            'duration_ms' => (int)$result['duration_ms'],
+            'is_up' => (bool)$result['is_up'],
+            'http_status' => $result['http_status'] ? (int)$result['http_status'] : null,
+            'error_message' => $result['error_message'],
+            'response_headers' => $result['response_headers'],
+            'response_body' => $result['body_sample'], // Note: using body_sample as response_body for consistency
+            'body_sample' => $result['body_sample']
+        ]
     ];
     
-    // Clean up data for display
-    if (empty($responseData['response_headers']) || $responseData['response_headers'] === '{}') {
-        $responseData['response_headers'] = null;
-    } else {
-        // Pretty format headers if they exist
-        $responseData['response_headers'] = htmlspecialchars($responseData['response_headers']);
-    }
-    
-    if (empty($responseData['body_sample'])) {
-        $responseData['body_sample'] = null;
-    } else {
-        // Truncate very long responses for display
-        if (strlen($responseData['body_sample']) > 10000) {
-            $responseData['body_sample'] = substr($responseData['body_sample'], 0, 10000) . "\n\n[Response truncated for display...]";
-        }
-        $responseData['body_sample'] = htmlspecialchars($responseData['body_sample']);
-    }
-    
-    if (empty($responseData['error_message'])) {
-        $responseData['error_message'] = null;
-    } else {
-        $responseData['error_message'] = htmlspecialchars($responseData['error_message']);
-    }
-    
-    // Success response
-    echo json_encode([
-        'success' => true,
-        'result' => $responseData
-    ], JSON_PRETTY_PRINT);
+    echo json_encode($response);
     
 } catch (Exception $e) {
-    // Error response
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => $e->getMessage()
-    ], JSON_PRETTY_PRINT);
-    
-    // Log the error for debugging
-    error_log('Result details API error: ' . $e->getMessage());
+    error_log("Error fetching result details: " . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'Internal server error']);
 }
+?>

@@ -1,84 +1,115 @@
 <?php
+/**
+ * Uptime Reports Page - Simplified Version
+ */
+
 require_once 'bootstrap.php';
 
-$exportFormat = $_GET['export'] ?? null;
-$checkId = $_GET['check_id'] ?? null;
+$auth->requireAuth();
+
+// Get parameters
+$checkId = isset($_GET['check_id']) ? (int)$_GET['check_id'] : 0;
 $categoryFilter = $_GET['category'] ?? 'all';
-$view = $_GET['view'] ?? '90days'; // today, date, 7days, 30days, 90days
-$specificDate = $_GET['date'] ?? date('Y-m-d');
+$days = (int)($_GET['days'] ?? 90);
+$view = $_GET['view'] ?? '90d';
+$exportFormat = $_GET['export'] ?? '';
 
-// Get all categories for filter dropdown
-$categories = [];
-try {
-    $categories = $db->fetchAll("
-        SELECT c.*, 
-               COUNT(DISTINCT ch.id) as active_checks_count
-        FROM categories c
-        LEFT JOIN checks ch ON c.id = ch.category_id AND ch.enabled = 1
-        GROUP BY c.id
-        ORDER BY c.name ASC
-    ");
-} catch (Exception $e) {
-    // Categories table might not exist yet
-    error_log("Categories query failed: " . $e->getMessage());
-}
-
-// Determine date range based on view
+// Handle different time ranges
 switch($view) {
+    case '1h':
+        $startDate = date('Y-m-d H:i:s', strtotime('-1 hour'));
+        $endDate = date('Y-m-d H:i:s');
+        $days = 0;
+        break;
     case 'today':
-        $startDate = date('Y-m-d');
-        $endDate = date('Y-m-d');
+        $startDate = date('Y-m-d 00:00:00');
+        $endDate = date('Y-m-d 23:59:59');
         $days = 1;
-        $isHourlyView = true;
         break;
-    case 'date':
-        $startDate = $specificDate;
-        $endDate = $specificDate;
-        $days = 1;
-        $isHourlyView = true;
-        break;
-    case '7days':
+    case '7d':
         $days = 7;
         $startDate = date('Y-m-d', strtotime("-{$days} days"));
         $endDate = date('Y-m-d');
-        $isHourlyView = false;
         break;
-    case '30days':
+    case '30d':
         $days = 30;
         $startDate = date('Y-m-d', strtotime("-{$days} days"));
         $endDate = date('Y-m-d');
-        $isHourlyView = false;
         break;
-    case '90days':
-    default:
+    case '90d':
         $days = 90;
         $startDate = date('Y-m-d', strtotime("-{$days} days"));
         $endDate = date('Y-m-d');
-        $isHourlyView = false;
         break;
+    default:
+        $startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime("-{$days} days"));
+        $endDate = $_GET['end_date'] ?? date('Y-m-d');
 }
 
-// Build WHERE clause for category filter
-$whereClause = '';
+// Get all categories for filter
+$categories = $db->fetchAll("SELECT * FROM categories ORDER BY name ASC");
+
+// Enhanced uptime color logic function
+function getUptimeColorClass($uptime) {
+    if ($uptime <= 50) return 'text-red-600';
+    if ($uptime < 99) return 'text-orange-500';
+    return 'text-green-600';
+}
+
+function getUptimeBackgroundClass($uptime) {
+    if ($uptime <= 50) return 'bg-red-500';
+    if ($uptime < 99) return 'bg-orange-500';
+    return 'bg-green-500';
+}
+
+function getUptimeSegmentClass($uptime) {
+    if ($uptime <= 50) return 'uptime-down';
+    if ($uptime < 99) return 'uptime-degraded';
+    return 'uptime-up';
+}
+
+// Get checks based on filters
+$whereClauses = ['c.enabled = 1'];
 $whereParams = [];
 
-if ($categoryFilter !== 'all') {
+if ($checkId) {
+    $whereClauses[] = 'c.id = ?';
+    $whereParams[] = $checkId;
+} elseif ($categoryFilter !== 'all') {
     if ($categoryFilter === 'uncategorized') {
-        $whereClause = 'WHERE category_id IS NULL';
+        $whereClauses[] = 'c.category_id IS NULL';
     } else {
-        $whereClause = 'WHERE category_id = ?';
+        $whereClauses[] = 'c.category_id = ?';
         $whereParams[] = (int)$categoryFilter;
     }
 }
 
-// Get checks based on category filter
-$checksQuery = 'SELECT id, name, url, category_id FROM checks ' . $whereClause . ' ORDER BY name';
+$whereClause = implode(' AND ', $whereClauses);
+$checksQuery = "SELECT c.*, cat.name as category_name, cat.color as category_color 
+                FROM checks c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                WHERE {$whereClause} 
+                ORDER BY c.name";
 $allChecks = $db->fetchAll($checksQuery, $whereParams);
 
 // Handle CSV export
 if ($exportFormat === 'csv') {
-    $whereClauses = ['cr.started_at >= ? AND cr.started_at <= ?'];
-    $params = [$startDate . ' 00:00:00', $endDate . ' 23:59:59'];
+    $whereClauses = [];
+    $params = [];
+    
+    if ($view === '1h') {
+        $whereClauses[] = 'cr.started_at >= ? AND cr.started_at <= ?';
+        $params[] = date('Y-m-d H:i:s', strtotime('-1 hour'));
+        $params[] = date('Y-m-d H:i:s');
+    } elseif ($view === 'today') {
+        $whereClauses[] = 'cr.started_at >= ? AND cr.started_at <= ?';
+        $params[] = date('Y-m-d 00:00:00');
+        $params[] = date('Y-m-d 23:59:59');
+    } else {
+        $whereClauses[] = 'cr.started_at >= ? AND cr.started_at <= ?';
+        $params[] = $startDate . ' 00:00:00';
+        $params[] = $endDate . ' 23:59:59';
+    }
     
     if ($checkId) {
         $whereClauses[] = 'cr.check_id = ?';
@@ -106,8 +137,9 @@ if ($exportFormat === 'csv') {
         ORDER BY cr.started_at ASC
     ", $params);
 
+    $filename = 'uptime-report-' . ($view === '1h' ? 'last-hour' : ($view === 'today' ? 'today' : $startDate . '-to-' . $endDate)) . '.csv';
     header('Content-Type: text/csv');
-    header('Content-Disposition: attachment; filename="uptime-report-' . $startDate . '-to-' . $endDate . '.csv"');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
     
     $output = fopen('php://output', 'w');
     fputcsv($output, ['Check Name', 'Category', 'URL', 'Started At', 'Ended At', 'Duration (ms)', 'HTTP Status', 'Is Up', 'Error']);
@@ -130,772 +162,600 @@ if ($exportFormat === 'csv') {
     exit;
 }
 
-// Get hourly data for single day view
-function getHourlyData($db, $checkId, $date) {
+// Helper function to get hourly uptime data
+function getHourlyData($db, $checkId, $startDateTime, $endDateTime) {
     $data = [];
     
-    for ($hour = 0; $hour < 24; $hour++) {
-        $hourStr = str_pad($hour, 2, '0', STR_PAD_LEFT);
-        $startTime = $date . ' ' . $hourStr . ':00:00';
-        $endTime = $date . ' ' . $hourStr . ':59:59';
+    if (strpos($startDateTime, ' ') === false) {
+        $startDateTime = $startDateTime . ' 00:00:00';
+        $endDateTime = $endDateTime . ' 23:59:59';
+    }
+    
+    $start = new DateTime($startDateTime);
+    $end = new DateTime($endDateTime);
+    
+    $diffHours = $end->diff($start)->h + ($end->diff($start)->days * 24);
+    $interval = $diffHours <= 1 ? 'PT5M' : 'PT1H';
+    
+    $current = clone $start;
+    while ($current <= $end) {
+        $nextPeriod = clone $current;
+        $nextPeriod->add(new DateInterval($interval));
         
-        $hourData = $db->fetchOne("
+        $periodData = $db->fetchOne("
             SELECT 
                 COUNT(*) as total_checks,
                 SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END) as up_checks,
                 SUM(CASE WHEN is_up = 0 THEN 1 ELSE 0 END) as down_checks,
-                AVG(duration_ms) as avg_latency,
-                MAX(duration_ms) as max_latency,
-                MIN(CASE WHEN is_up = 0 THEN 1 ELSE 0 END) as had_downtime
+                AVG(duration_ms) as avg_latency
             FROM check_results
             WHERE check_id = ?
                 AND started_at >= ?
-                AND started_at <= ?
-        ", [$checkId, $startTime, $endTime]);
+                AND started_at < ?
+        ", [$checkId, $current->format('Y-m-d H:i:s'), $nextPeriod->format('Y-m-d H:i:s')]);
         
-        $status = 'none';
-        $uptime = 0;
-        
-        if ($hourData['total_checks'] > 0) {
-            $uptime = ($hourData['up_checks'] / $hourData['total_checks']) * 100;
-            
-            if ($hourData['down_checks'] > 0) {
-                $status = 'down';
-            } elseif ($hourData['avg_latency'] > 1000) {
-                $status = 'slow';
-            } else {
-                $status = 'up';
-            }
-        }
+        $uptime = $periodData['total_checks'] > 0 
+            ? round(($periodData['up_checks'] / $periodData['total_checks']) * 100, 1)
+            : 100;
         
         $data[] = [
-            'hour' => $hour,
-            'time' => $hourStr . ':00',
-            'status' => $status,
-            'uptime' => round($uptime, 2),
-            'total_checks' => $hourData['total_checks'] ?? 0,
-            'down_checks' => $hourData['down_checks'] ?? 0,
-            'avg_latency' => round($hourData['avg_latency'] ?? 0)
+            'datetime' => $current->format('Y-m-d H:i:s'),
+            'period' => $interval === 'PT5M' ? $current->format('H:i') : $current->format('H:00'),
+            'uptime' => $uptime,
+            'total_checks' => (int)$periodData['total_checks'],
+            'up_checks' => (int)$periodData['up_checks'],
+            'down_checks' => (int)$periodData['down_checks'],
+            'avg_latency' => round($periodData['avg_latency'] ?: 0),
+            'status' => getUptimeSegmentClass($uptime)
         ];
+        
+        $current = $nextPeriod;
     }
     
     return $data;
 }
 
-// Get daily data for multi-day view
+// Helper function to get daily uptime data
 function getDailyData($db, $checkId, $days) {
     $data = [];
-    $today = new DateTime();
     
     for ($i = $days - 1; $i >= 0; $i--) {
-        $date = (clone $today)->modify("-{$i} days");
-        $dateStr = $date->format('Y-m-d');
+        $date = date('Y-m-d', strtotime("-{$i} days"));
         
         $dayData = $db->fetchOne("
             SELECT 
                 COUNT(*) as total_checks,
                 SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END) as up_checks,
                 SUM(CASE WHEN is_up = 0 THEN 1 ELSE 0 END) as down_checks,
-                AVG(duration_ms) as avg_latency,
-                MAX(duration_ms) as max_latency
+                AVG(duration_ms) as avg_latency
             FROM check_results
             WHERE check_id = ?
                 AND DATE(started_at) = ?
-        ", [$checkId, $dateStr]);
+        ", [$checkId, $date]);
         
-        $status = 'none';
-        $uptime = 0;
-        
-        if ($dayData['total_checks'] > 0) {
-            $uptime = ($dayData['up_checks'] / $dayData['total_checks']) * 100;
-            
-            if ($dayData['down_checks'] > 0) {
-                $status = 'down';
-            } elseif ($dayData['avg_latency'] > 1000) {
-                $status = 'slow';
-            } else {
-                $status = 'up';
-            }
-        }
+        $uptime = $dayData['total_checks'] > 0 
+            ? round(($dayData['up_checks'] / $dayData['total_checks']) * 100, 1)
+            : 100;
         
         $data[] = [
-            'date' => $dateStr,
-            'status' => $status,
-            'uptime' => round($uptime, 2),
-            'total_checks' => $dayData['total_checks'] ?? 0,
-            'down_checks' => $dayData['down_checks'] ?? 0,
-            'avg_latency' => round($dayData['avg_latency'] ?? 0)
+            'date' => $date,
+            'uptime' => $uptime,
+            'total_checks' => (int)$dayData['total_checks'],
+            'up_checks' => (int)$dayData['up_checks'],
+            'down_checks' => (int)$dayData['down_checks'],
+            'avg_latency' => round($dayData['avg_latency'] ?: 0),
+            'status' => getUptimeSegmentClass($uptime)
         ];
     }
     
     return $data;
 }
 
-// Calculate overall statistics
+// Helper function to calculate overall stats
 function calculateOverallStats($db, $checkId, $startDate, $endDate) {
     return $db->fetchOne("
         SELECT 
             COUNT(*) as total_checks,
             SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END) as up_checks,
+            SUM(CASE WHEN is_up = 0 THEN 1 ELSE 0 END) as down_checks,
             AVG(duration_ms) as avg_latency,
             MIN(duration_ms) as min_latency,
-            MAX(duration_ms) as max_latency,
-            COUNT(DISTINCT DATE(started_at)) as days_monitored
+            MAX(duration_ms) as max_latency
         FROM check_results
         WHERE check_id = ?
-            AND started_at >= ?
+            AND started_at >= ? 
             AND started_at <= ?
     ", [$checkId, $startDate . ' 00:00:00', $endDate . ' 23:59:59']);
 }
 
-// Get recent incidents for display
-function getRecentIncidents($db, $checkId, $date) {
+// Get recent incidents function
+function getRecentIncidents($db, $checkId, $startDate) {
     return $db->fetchAll("
-        SELECT i.*, 
-               cr1.started_at as down_time,
-               cr2.started_at as up_time
-        FROM incidents i
-        LEFT JOIN check_results cr1 ON i.opened_by_result_id = cr1.id
-        LEFT JOIN check_results cr2 ON i.closed_by_result_id = cr2.id
-        WHERE i.check_id = ?
-            AND DATE(i.started_at) = ?
-        ORDER BY i.started_at DESC
+        SELECT * FROM incidents 
+        WHERE check_id = ? 
+            AND started_at >= ? 
+        ORDER BY started_at DESC 
         LIMIT 5
-    ", [$checkId, $date]);
+    ", [$checkId, $startDate]);
 }
 
-// Get category info for display
-$currentCategoryName = 'All Categories';
-if ($categoryFilter !== 'all') {
-    if ($categoryFilter === 'uncategorized') {
-        $currentCategoryName = 'Uncategorized';
-    } else {
-        $categoryInfo = $db->fetchOne('SELECT name FROM categories WHERE id = ?', [$categoryFilter]);
-        if ($categoryInfo) {
-            $currentCategoryName = $categoryInfo['name'];
-        }
-    }
-}
+// Start output
+ob_start();
+?>
 
-$content = '
 <style>
+    .uptime-segment {
+        height: 40px;
+        flex: 1;
+        margin: 0 1px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: opacity 0.2s, transform 0.1s;
+        display: inline-block;
+    }
+    .uptime-segment:hover {
+        opacity: 0.8;
+        transform: scaleY(1.1);
+    }
+    .uptime-up { background: #10b981 !important; }
+    .uptime-degraded { background: #f97316 !important; }
+    .uptime-down { background: #ef4444 !important; }
+    .uptime-no-data { background: #e5e7eb !important; }
+    
     .uptime-bar {
         display: flex;
         gap: 1px;
-        height: 40px;
-        margin: 8px 0;
-        border-radius: 4px;
-        overflow: hidden;
-    }
-    
-    .uptime-segment {
-        flex: 1;
-        min-width: 2px;
-        cursor: pointer;
-        transition: transform 0.2s, opacity 0.2s;
-        position: relative;
-    }
-    
-    .uptime-segment:hover {
-        transform: scaleY(1.2);
-        z-index: 10;
-        opacity: 0.9;
-    }
-    
-    .uptime-segment.up {
-        background-color: #10b981;
-    }
-    
-    .uptime-segment.down {
-        background-color: #ef4444;
-    }
-    
-    .uptime-segment.slow {
-        background-color: #f59e0b;
-    }
-    
-    .uptime-segment.none {
-        background-color: #e5e7eb;
-    }
-    
-    .status-legend {
-        display: flex;
-        gap: 20px;
-        margin: 10px 0;
-        font-size: 14px;
-    }
-    
-    .legend-item {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    
-    .legend-color {
-        width: 16px;
-        height: 16px;
-        border-radius: 2px;
-    }
-    
-    .check-card {
-        background: white;
+        background: #f3f4f6;
         border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        padding: 4px;
+        margin: 16px 0;
     }
     
-    .check-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 10px;
-    }
-    
-    .check-title {
-        font-size: 18px;
-        font-weight: 600;
-        color: #1f2937;
-    }
-    
-    .check-url {
-        font-size: 14px;
-        color: #6b7280;
-        margin-top: 2px;
-    }
-    
-    .uptime-percentage {
-        font-size: 24px;
-        font-weight: bold;
-    }
-    
-    .uptime-high { color: #10b981; }
-    .uptime-medium { color: #f59e0b; }
-    .uptime-low { color: #ef4444; }
-    
-    .timeline-labels {
-        display: flex;
-        justify-content: space-between;
-        font-size: 12px;
-        color: #6b7280;
-        margin-top: 5px;
-    }
-    
-    .hour-labels {
-        display: flex;
-        justify-content: space-between;
-        font-size: 11px;
-        color: #9ca3af;
-        margin-top: 5px;
-    }
-    
-    .tooltip {
-        position: absolute;
-        background: #1f2937;
-        color: white;
-        padding: 10px;
-        border-radius: 6px;
-        font-size: 12px;
-        pointer-events: none;
-        z-index: 1000;
-        display: none;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-        max-width: 250px;
-    }
-    
-    .current-status {
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    
-    .status-operational {
-        background-color: #d1fae5;
-        color: #065f46;
-    }
-    
-    .status-degraded {
-        background-color: #fed7aa;
-        color: #92400e;
-    }
-    
-    .status-down {
-        background-color: #fee2e2;
-        color: #991b1b;
-    }
-    
-    .view-selector {
-        display: flex;
-        gap: 8px;
-    }
-    
-    .view-btn {
-        padding: 6px 12px;
+    .time-filter-tab {
+        padding: 8px 16px;
+        border-radius: 8px;
         border: 1px solid #d1d5db;
         background: white;
         color: #6b7280;
-        border-radius: 6px;
         cursor: pointer;
         transition: all 0.2s;
-        font-size: 14px;
+        text-decoration: none;
+        font-weight: 500;
+        display: inline-block;
     }
-    
-    .view-btn:hover {
-        border-color: #9ca3af;
+    .time-filter-tab:hover {
+        border-color: #6b7280;
         color: #374151;
     }
-    
-    .view-btn.active {
-        background: #4f46e5;
-        color: white;
-        border-color: #4f46e5;
-    }
-    
-    .incident-list {
-        margin-top: 10px;
-        padding: 10px;
-        background: #f9fafb;
-        border-radius: 6px;
-        font-size: 13px;
-    }
-    
-    .incident-item {
-        padding: 5px 0;
-        border-bottom: 1px solid #e5e7eb;
-    }
-    
-    .incident-item:last-child {
-        border-bottom: none;
+    .time-filter-tab.active {
+        background: #6b7280 !important;
+        color: white !important;
+        border-color: #6b7280;
     }
 </style>
 
 <div class="space-y-6">
-    <div class="flex justify-between items-center">
-        <div>
-            <h1 class="text-2xl font-bold text-gray-900">Uptime Report</h1>
-            <p class="text-gray-600 mt-1">';
-
-// Display appropriate subtitle based on view and category
-if ($categoryFilter !== 'all') {
-    $content .= 'Category: ' . htmlspecialchars($currentCategoryName) . ' • ';
-}
-
-if ($view === 'today') {
-    $content .= 'Today\'s hourly performance - ' . date('F j, Y');
-} elseif ($view === 'date') {
-    $content .= 'Hourly performance for ' . date('F j, Y', strtotime($specificDate));
-} else {
-    $content .= 'Monitor performance over the past ' . $days . ' days';
-}
-
-$content .= '</p>
-        </div>
-        <div class="flex gap-3 items-center">
-            <input type="date" id="specificDate" value="' . $specificDate . '" 
-                   onchange="viewSpecificDate(this.value)"
-                   class="px-3 py-2 border border-gray-300 rounded-md"
-                   max="' . date('Y-m-d') . '">
-            <a href="?view=' . $view . '&category=' . $categoryFilter . '&export=csv" 
-               class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
-                Export CSV
-            </a>
+    <!-- Header with Gray Theme matching check.php -->
+    <div class="bg-gradient-to-r from-slate-700 to-slate-600 rounded-xl p-6 text-white shadow-lg">
+        <div class="flex justify-between items-start">
+            <div class="flex-1">
+                <h1 class="text-3xl font-bold mb-3">Uptime Reports</h1>
+                <p class="text-slate-200 text-lg">
+                    <?php if ($checkId): 
+                        $selectedCheck = $db->fetchOne("SELECT name FROM checks WHERE id = ?", [$checkId]);
+                        if ($selectedCheck):
+                    ?>
+                        Detailed performance report for: <strong><?php echo htmlspecialchars($selectedCheck['name']); ?></strong>
+                    <?php else: ?>
+                        Check not found or disabled
+                    <?php endif; ?>
+                    <?php elseif ($categoryFilter !== 'all'): 
+                        if ($categoryFilter === 'uncategorized') {
+                            $categoryText = 'Uncategorized';
+                        } else {
+                            $selectedCategory = null;
+                            foreach ($categories as $cat) {
+                                if ($cat['id'] == $categoryFilter) {
+                                    $selectedCategory = $cat;
+                                    break;
+                                }
+                            }
+                            $categoryText = $selectedCategory ? $selectedCategory['name'] : 'Selected Category';
+                        }
+                    ?>
+                        Performance overview for: <strong><?php echo htmlspecialchars($categoryText); ?></strong>
+                    <?php else: ?>
+                        System-wide performance overview for the past <?php echo $days; ?> days
+                    <?php endif; ?>
+                </p>
+                
+                <div class="flex flex-wrap gap-4 mt-4 text-sm text-slate-200">
+                    <span><strong>Period:</strong> 
+                        <?php 
+                        if ($view === '1h') {
+                            echo 'Last 1 hour';
+                        } elseif ($view === 'today') {
+                            echo 'Today (' . date('M d, Y') . ')';
+                        } else {
+                            echo date('M d, Y', strtotime($startDate)) . ' - ' . date('M d, Y', strtotime($endDate));
+                        }
+                        ?>
+                    </span>
+                    <span><strong>Total Checks:</strong> <?php echo count($allChecks); ?></span>
+                </div>
+            </div>
+            
+            <div class="flex gap-2">
+                <a href="?<?php echo http_build_query(array_merge($_GET, ['export' => 'csv'])); ?>" 
+                   class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-all flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    Export CSV
+                </a>
+                <a href="/dashboard.php" 
+                   class="px-4 py-2 border border-white/30 text-white rounded-lg hover:bg-white/10 transition-all flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                    </svg>
+                    Dashboard
+                </a>
+            </div>
         </div>
     </div>
 
-    <!-- Category Filter -->
-    <div class="bg-white p-4 rounded-lg shadow">
-        <form method="GET" class="flex gap-4 items-end">
-            <input type="hidden" name="view" value="' . $view . '">
-            ' . ($view === 'date' ? '<input type="hidden" name="date" value="' . $specificDate . '">' : '') . '
+    <!-- Filters and Controls -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <form method="GET" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Time Range Filter -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Time Range</label>
+                <div class="flex gap-2 flex-wrap">
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['view' => '1h'])); ?>" 
+                       class="time-filter-tab <?php echo $view === '1h' ? 'active' : ''; ?>">1H</a>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['view' => 'today'])); ?>" 
+                       class="time-filter-tab <?php echo $view === 'today' ? 'active' : ''; ?>">Today</a>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['view' => '7d', 'days' => 7])); ?>" 
+                       class="time-filter-tab <?php echo $view === '7d' ? 'active' : ''; ?>">7D</a>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['view' => '30d', 'days' => 30])); ?>" 
+                       class="time-filter-tab <?php echo $view === '30d' ? 'active' : ''; ?>">30D</a>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['view' => '90d', 'days' => 90])); ?>" 
+                       class="time-filter-tab <?php echo $view === '90d' ? 'active' : ''; ?>">90D</a>
+                </div>
+            </div>
             
-            <div class="flex-1">
-                <label for="category" class="block text-sm font-medium text-gray-700 mb-1">Filter by Category</label>
-                <select id="category" name="category" onchange="this.form.submit()"
-                        class="block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
-                    <option value="all"' . ($categoryFilter === 'all' ? ' selected' : '') . '>All Categories</option>';
-
-if (!empty($categories)) {
-    foreach ($categories as $category) {
-        $content .= '<option value="' . $category['id'] . '"' . 
-                    ($categoryFilter == $category['id'] ? ' selected' : '') . '>' . 
-                    htmlspecialchars($category['name']) . 
-                    ' (' . $category['active_checks_count'] . ' checks)</option>';
-    }
-}
-
-// Count uncategorized checks
-$uncategorizedCount = $db->fetchColumn("SELECT COUNT(*) FROM checks WHERE category_id IS NULL AND enabled = 1") ?: 0;
-if ($uncategorizedCount > 0 || $categoryFilter === 'uncategorized') {
-    $content .= '<option value="uncategorized"' . ($categoryFilter === 'uncategorized' ? ' selected' : '') . '>Uncategorized (' . $uncategorizedCount . ' checks)</option>';
-}
-
-$content .= '
+            <!-- Category Filter -->
+            <div>
+                <label for="category" class="block text-sm font-medium text-gray-700 mb-2">Filter by Category</label>
+                <select id="category" name="category" 
+                        onchange="this.form.submit()"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <option value="all" <?php echo $categoryFilter === 'all' ? 'selected' : ''; ?>>All Categories</option>
+                    <option value="uncategorized" <?php echo $categoryFilter === 'uncategorized' ? 'selected' : ''; ?>>Uncategorized</option>
+                    <?php foreach ($categories as $cat): ?>
+                        <option value="<?php echo $cat['id']; ?>" 
+                                <?php echo $categoryFilter == $cat['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($cat['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
                 </select>
             </div>
             
-            <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
-                Apply Filter
-            </button>
-        </form>
-    </div>
-
-    <!-- View Selector Buttons -->
-    <div class="view-selector">
-        <button class="view-btn ' . ($view === 'today' ? 'active' : '') . '" 
-                onclick="changeView(\'today\')">Today</button>
-        <button class="view-btn ' . ($view === '7days' ? 'active' : '') . '" 
-                onclick="changeView(\'7days\')">Last 7 Days</button>
-        <button class="view-btn ' . ($view === '30days' ? 'active' : '') . '" 
-                onclick="changeView(\'30days\')">Last 30 Days</button>
-        <button class="view-btn ' . ($view === '90days' ? 'active' : '') . '" 
-                onclick="changeView(\'90days\')">Last 90 Days</button>
-    </div>
-
-    <!-- Status Legend -->
-    <div class="status-legend">
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #10b981;"></div>
-            <span>Operational</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #f59e0b;"></div>
-            <span>Slow Response (>1s)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #ef4444;"></div>
-            <span>Downtime</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background-color: #e5e7eb;"></div>
-            <span>No Data</span>
-        </div>
-    </div>';
-
-// Display message if no checks in selected category
-if (empty($allChecks)) {
-    $content .= '
-    <div class="bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded">
-        <p>No checks found in the selected category. Please select a different category or <a href="/check_form.php" class="text-yellow-900 underline">add a new check</a>.</p>
-    </div>';
-} else {
-    // Get category info for each check
-    $checkCategories = [];
-    if (!empty($allChecks)) {
-        $checkIds = array_column($allChecks, 'id');
-        if (!empty($checkIds)) {
-            $placeholders = str_repeat('?,', count($checkIds) - 1) . '?';
-            $categoryData = $db->fetchAll("
-                SELECT c.id, c.category_id, cat.name as category_name, cat.color 
-                FROM checks c
-                LEFT JOIN categories cat ON c.category_id = cat.id
-                WHERE c.id IN ({$placeholders})
-            ", $checkIds);
-            
-            foreach ($categoryData as $catData) {
-                $checkCategories[$catData['id']] = $catData;
-            }
-        }
-    }
-
-    // Display uptime visualization for each check
-    foreach ($allChecks as $check) {
-        if ($isHourlyView) {
-            $uptimeData = getHourlyData($db, $check['id'], $startDate);
-        } else {
-            $uptimeData = getDailyData($db, $check['id'], $days);
-        }
-        
-        $stats = calculateOverallStats($db, $check['id'], $startDate, $endDate);
-        
-        $overallUptime = $stats['total_checks'] > 0 
-            ? round(($stats['up_checks'] / $stats['total_checks']) * 100, 2) 
-            : 0;
-        
-        // Determine uptime color class
-        $uptimeClass = 'uptime-high';
-        if ($overallUptime < 95) $uptimeClass = 'uptime-medium';
-        if ($overallUptime < 90) $uptimeClass = 'uptime-low';
-        
-        // Get current status
-        $lastCheck = $db->fetchOne("
-            SELECT is_up, duration_ms, started_at 
-            FROM check_results 
-            WHERE check_id = ? 
-            ORDER BY started_at DESC 
-            LIMIT 1
-        ", [$check['id']]);
-        
-        $currentStatus = 'Unknown';
-        $statusClass = 'status-operational';
-        
-        if ($lastCheck) {
-            if (!$lastCheck['is_up']) {
-                $currentStatus = 'Down';
-                $statusClass = 'status-down';
-            } elseif ($lastCheck['duration_ms'] > 1000) {
-                $currentStatus = 'Degraded';
-                $statusClass = 'status-degraded';
-            } else {
-                $currentStatus = 'Operational';
-                $statusClass = 'status-operational';
-            }
-        }
-        
-        // Get incidents for the period
-        $incidents = getRecentIncidents($db, $check['id'], $startDate);
-        
-        $incidentText = '';
-        if ($view === 'today' || $view === 'date') {
-            $dateLabel = $view === 'today' ? 'today' : 'this day';
-            if (count($incidents) > 0) {
-                $openIncidents = array_filter($incidents, fn($i) => $i['status'] === 'OPEN');
-                if (count($openIncidents) > 0) {
-                    $incidentText = '<span class="text-red-600 text-sm">⚠️ ' . count($openIncidents) . ' active incident(s)</span>';
-                } else {
-                    $incidentText = '<span class="text-yellow-600 text-sm"> ' . count($incidents) . ' resolved incident(s) ' . $dateLabel . '</span>';
-                }
-            } else {
-                $incidentText = '<span class="text-green-600 text-sm">✓ No downtime recorded ' . $dateLabel . '</span>';
-            }
-        }
-        
-        // Get category badge
-        $categoryBadge = '';
-        if (isset($checkCategories[$check['id']])) {
-            $catInfo = $checkCategories[$check['id']];
-            if (!empty($catInfo['category_name'])) {
-                $categoryBadge = '
-                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ml-2" 
-                      style="background-color: ' . ($catInfo['color'] ?? '#6B7280') . '20; 
-                             color: ' . ($catInfo['color'] ?? '#6B7280') . ';">
-                    ' . htmlspecialchars($catInfo['category_name']) . '
-                </span>';
-            }
-        }
-        
-        $content .= '
-        <div class="check-card">
-            <div class="check-header">
-                <div>
-                    <div class="flex items-center">
-                        <div class="check-title">' . htmlspecialchars($check['name']) . '</div>
-                        ' . $categoryBadge . '
-                    </div>
-                    <div class="check-url">' . htmlspecialchars($check['url']) . '</div>
-                </div>
-                <div class="text-right">
-                    <span class="current-status ' . $statusClass . '">' . $currentStatus . '</span>
-                    <div class="uptime-percentage ' . $uptimeClass . ' mt-2">' . $overallUptime . '%</div>
-                    <div class="text-xs text-gray-500">uptime</div>
+            <!-- Custom Date Range -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Custom Range</label>
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input type="date" id="start-date" name="start_date" value="<?php echo $startDate; ?>" 
+                           class="w-full sm:flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                    <input type="date" id="end-date" name="end_date" value="<?php echo $endDate; ?>" 
+                           class="w-full sm:flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                    <button type="submit" name="view" value="custom"
+                            class="w-full sm:w-auto px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm whitespace-nowrap">
+                        Apply
+                    </button>
                 </div>
             </div>
-            
-            <div class="uptime-bar" data-check-id="' . $check['id'] . '">';
+        </form>
         
-        if ($isHourlyView) {
-            // Hourly view
-            foreach ($uptimeData as $hour) {
-                $tooltip = '<strong>' . $hour['time'] . ':00 - ' . $hour['time'] . ':59</strong><br>';
-                $tooltip .= 'Uptime: ' . $hour['uptime'] . '%<br>';
-                $tooltip .= 'Checks: ' . $hour['total_checks'] . '<br>';
-                if ($hour['down_checks'] > 0) {
-                    $tooltip .= '<span style="color:#ef4444">Failures: ' . $hour['down_checks'] . '</span><br>';
-                }
-                if ($hour['avg_latency'] > 0) {
-                    $latencyColor = $hour['avg_latency'] > 1000 ? '#f59e0b' : '#10b981';
-                    $tooltip .= '<span style="color:' . $latencyColor . '">Avg: ' . $hour['avg_latency'] . 'ms</span>';
-                }
+        <!-- Active Filters Display -->
+        <?php if ($categoryFilter !== 'all'): ?>
+        <div class="mt-4 pt-4 border-t border-gray-200">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm text-gray-600">Active filters:</span>
                 
-                $content .= '<div class="uptime-segment ' . $hour['status'] . '" 
-                                  data-hour="' . $hour['hour'] . '" 
-                                  data-tooltip="' . htmlspecialchars($tooltip) . '"></div>';
-            }
-        } else {
-            // Daily view
-            foreach ($uptimeData as $day) {
-                $tooltip = '<strong>' . date('M j, Y', strtotime($day['date'])) . '</strong><br>';
-                $tooltip .= 'Uptime: ' . $day['uptime'] . '%<br>';
-                $tooltip .= 'Checks: ' . $day['total_checks'] . '<br>';
-                if ($day['down_checks'] > 0) {
-                    $tooltip .= '<span style="color:#ef4444">Failures: ' . $day['down_checks'] . '</span><br>';
-                }
-                if ($day['avg_latency'] > 0) {
-                    $latencyColor = $day['avg_latency'] > 1000 ? '#f59e0b' : '#10b981';
-                    $tooltip .= '<span style="color:' . $latencyColor . '">Avg: ' . $day['avg_latency'] . 'ms</span>';
-                }
-                
-                $content .= '<div class="uptime-segment ' . $day['status'] . '" 
-                                  data-date="' . $day['date'] . '" 
-                                  data-tooltip="' . htmlspecialchars($tooltip) . '"></div>';
-            }
-        }
-        
-        $content .= '
-            </div>';
-        
-        // Add timeline labels
-        if ($isHourlyView) {
-            $content .= '
-            <div class="hour-labels">
-                <span>00:00</span>
-                <span>06:00</span>
-                <span>12:00</span>
-                <span>18:00</span>
-                <span>23:59</span>
-            </div>';
-        } else {
-            $content .= '
-            <div class="timeline-labels">
-                <span>' . $days . ' days ago</span>
-                <span>Today</span>
-            </div>';
-        }
-        
-        // Display period stats and incidents
-        $content .= '
-            <div class="mt-3 flex justify-between items-center">
-                <div class="text-sm text-gray-600">';
-        
-        if ($stats['total_checks'] > 0) {
-            $content .= '
-                    <strong>Period Stats:</strong> 
-                    ' . $stats['total_checks'] . ' checks • 
-                    Avg: ' . round($stats['avg_latency']) . 'ms • 
-                    Min: ' . round($stats['min_latency']) . 'ms • 
-                    Max: ' . round($stats['max_latency']) . 'ms';
-        } else {
-            $content .= 'No data available for this period';
-        }
-        
-        $content .= '
-                </div>
-                <div>' . $incidentText . '</div>
-            </div>';
-        
-        // Show incident details for single day views
-        if (($isHourlyView && count($incidents) > 0)) {
-            $content .= '
-            <div class="incident-list">
-                <div class="font-semibold text-gray-700 mb-2">Incident Details:</div>';
-            
-            foreach ($incidents as $incident) {
-                $duration = 'Ongoing';
-                if ($incident['ended_at']) {
-                    $start = strtotime($incident['started_at']);
-                    $end = strtotime($incident['ended_at']);
-                    $diff = $end - $start;
-                    $duration = $diff < 3600 ? floor($diff / 60) . ' minutes' : floor($diff / 3600) . ' hours';
-                }
-                
-                $content .= '
-                <div class="incident-item">
-                    <span class="text-red-600">↓</span> 
-                    ' . date('H:i', strtotime($incident['down_time'])) . ' - ';
-                
-                if ($incident['up_time']) {
-                    $content .= '<span class="text-green-600">↑</span> ' . date('H:i', strtotime($incident['up_time']));
-                    $content .= ' <span class="text-gray-500">(' . $duration . ')</span>';
+                <?php 
+                if ($categoryFilter === 'uncategorized') {
+                    $categoryText = 'Uncategorized';
                 } else {
-                    $content .= '<span class="text-yellow-600">Ongoing</span>';
+                    $selectedCategory = null;
+                    foreach ($categories as $cat) {
+                        if ($cat['id'] == $categoryFilter) {
+                            $selectedCategory = $cat;
+                            break;
+                        }
+                    }
+                    $categoryText = $selectedCategory ? $selectedCategory['name'] : 'Selected Category';
+                }
+                ?>
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                    Category: <?php echo htmlspecialchars($categoryText); ?>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['category' => 'all'])); ?>" 
+                       class="ml-2 text-green-600 hover:text-green-800">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </a>
+                </span>
+                
+                <a href="/reports.php" class="text-sm text-gray-500 hover:text-gray-700 underline">Clear all filters</a>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- Checks Display -->
+    <div class="space-y-6">
+        <?php 
+        // Define global view type
+        $isHourlyView = ($view === '1h' || $view === 'today');
+        ?>
+        
+        <?php if (empty($allChecks)): ?>
+            <div class="text-center py-12 bg-gray-50 rounded-lg">
+                <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                </svg>
+                <p class="text-gray-500 text-lg">No checks found</p>
+                <p class="text-gray-400 text-sm mt-2">
+                    <?php 
+                    if ($categoryFilter !== 'all') {
+                        $categoryText = $categoryFilter === 'uncategorized' ? 'this category' : 'selected category';
+                        echo "No checks in {$categoryText}. ";
+                    } else {
+                        echo "No checks configured. ";
+                    }
+                    ?>
+                    <a href="/check_form.php" class="text-blue-600 underline">
+                        <?php echo ($categoryFilter !== 'all') ? 'Add a new check' : 'Add your first check'; ?>
+                    </a>
+                </p>
+            </div>
+        <?php else: ?>
+            <?php foreach ($allChecks as $check): 
+                // Determine which data function to use based on view
+                if ($isHourlyView) {
+                    $uptimeData = getHourlyData($db, $check['id'], $startDate, $endDate);
+                } else {
+                    $uptimeData = getDailyData($db, $check['id'], $days);
                 }
                 
-                $content .= '
-                </div>';
-            }
+                $stats = calculateOverallStats($db, $check['id'], $startDate, $endDate);
+                
+                $overallUptime = $stats['total_checks'] > 0 
+                    ? round(($stats['up_checks'] / $stats['total_checks']) * 100, 2) 
+                    : 100;
+                
+                // Get current status
+                $lastCheck = $db->fetchOne("
+                    SELECT is_up, duration_ms, started_at 
+                    FROM check_results 
+                    WHERE check_id = ? 
+                    ORDER BY started_at DESC 
+                    LIMIT 1
+                ", [$check['id']]);
+                
+                $currentStatus = 'Unknown';
+                $statusClass = 'status-operational';
+                
+                if ($lastCheck) {
+                    if (!$lastCheck['is_up']) {
+                        $currentStatus = 'Down';
+                        $statusClass = 'status-down';
+                    } elseif ($lastCheck['duration_ms'] > 1000) {
+                        $currentStatus = 'Degraded';
+                        $statusClass = 'status-degraded';
+                    } else {
+                        $currentStatus = 'Operational';
+                        $statusClass = 'status-operational';
+                    }
+                }
+                
+                $incidents = getRecentIncidents($db, $check['id'], $startDate);
+            ?>
             
-            $content .= '
-            </div>';
-        }
-        
-        $content .= '
-        </div>';
-    }
-}
-
-$content .= '
+            <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+                <div class="flex justify-between items-start">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-3 mb-2">
+                            <h3 class="text-xl font-semibold text-gray-900"><?php echo htmlspecialchars($check['name']); ?></h3>
+                            <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase <?php echo $statusClass === 'status-operational' ? 'bg-green-100 text-green-700' : ($statusClass === 'status-degraded' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'); ?>">
+                                <?php echo $currentStatus; ?>
+                            </span>
+                            
+                            <?php if ($check['category_name']): ?>
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold mr-2 border" 
+                                      style="background-color: <?php echo $check['category_color']; ?>20; color: <?php echo $check['category_color']; ?>; border-color: <?php echo $check['category_color']; ?>40;">
+                                    <?php echo htmlspecialchars($check['category_name']); ?>
+                                </span>
+                            <?php endif; ?>
+                        </div>
+                        <p class="text-gray-600 text-sm"><?php echo htmlspecialchars($check['url']); ?></p>
+                    </div>
+                    
+                    <div class="flex items-center gap-6">
+                        <!-- Uptime Circle -->
+                        <div class="w-32 h-32 rounded-full flex items-center justify-center flex-col text-white font-bold" style="background-color: <?php echo $overallUptime <= 50 ? '#ef4444' : ($overallUptime < 99 ? '#f97316' : '#10b981'); ?>;">
+                            <div class="text-2xl font-bold"><?php echo $overallUptime; ?>%</div>
+                            <div class="text-xs opacity-90">uptime</div>
+                        </div>
+                        
+                        <!-- Actions -->
+                        <div class="flex gap-2">
+                            <a href="/check.php?id=<?php echo $check['id']; ?>" 
+                               class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-all text-sm">
+                                View Details
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Uptime Timeline -->
+                <div class="uptime-bar" data-check-id="<?php echo $check['id']; ?>">
+                    <?php foreach ($uptimeData as $dataPoint): 
+                        if ($isHourlyView) {
+                            $tooltip = ($view === '1h' ? 'Time: ' : 'Hour: ') . $dataPoint['period'] . '\\n';
+                            $tooltip .= 'Uptime: ' . $dataPoint['uptime'] . '%\\n';
+                            $tooltip .= 'Checks: ' . $dataPoint['total_checks'];
+                            if ($dataPoint['down_checks'] > 0) {
+                                $tooltip .= '\\nFailures: ' . $dataPoint['down_checks'];
+                            }
+                            if ($dataPoint['avg_latency'] > 0) {
+                                $tooltip .= '\\nAvg: ' . $dataPoint['avg_latency'] . 'ms';
+                            }
+                            $dataAttr = 'data-datetime="' . $dataPoint['datetime'] . '"';
+                        } else {
+                            $tooltip = date('M j, Y', strtotime($dataPoint['date'])) . '\\n';
+                            $tooltip .= 'Uptime: ' . $dataPoint['uptime'] . '%\\n';
+                            $tooltip .= 'Checks: ' . $dataPoint['total_checks'];
+                            if ($dataPoint['down_checks'] > 0) {
+                                $tooltip .= '\\nFailures: ' . $dataPoint['down_checks'];
+                            }
+                            if ($dataPoint['avg_latency'] > 0) {
+                                $tooltip .= '\\nAvg: ' . $dataPoint['avg_latency'] . 'ms';
+                            }
+                            $dataAttr = 'data-date="' . $dataPoint['date'] . '"';
+                        }
+                    ?>
+                        <div class="uptime-segment <?php echo $dataPoint['status']; ?>" 
+                             <?php echo $dataAttr; ?>
+                             title="<?php echo $tooltip; ?>">
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                
+                <!-- Timeline Labels -->
+                <div class="flex justify-between text-xs text-gray-500 mt-2">
+                    <?php if ($view === '1h'): ?>
+                        <span>1 hour ago</span>
+                        <span>Now</span>
+                    <?php elseif ($view === 'today'): ?>
+                        <span>00:00</span>
+                        <span>23:59</span>
+                    <?php else: ?>
+                        <span><?php echo $days; ?> days ago</span>
+                        <span>Today</span>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Stats Grid -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+                    <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="text-2xl font-bold <?php echo getUptimeColorClass($overallUptime); ?>">
+                            <?php echo $overallUptime; ?>%
+                        </div>
+                        <div class="text-sm text-gray-600">Overall Uptime</div>
+                        <div class="text-xs text-gray-500"><?php echo $stats['total_checks']; ?> total checks</div>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="text-2xl font-bold text-green-600"><?php echo $stats['up_checks']; ?></div>
+                        <div class="text-sm text-gray-600">Successful</div>
+                        <div class="text-xs text-gray-500">checks passed</div>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="text-2xl font-bold text-red-600"><?php echo $stats['down_checks']; ?></div>
+                        <div class="text-sm text-gray-600">Failed</div>
+                        <div class="text-xs text-gray-500">checks failed</div>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="text-2xl font-bold text-blue-600"><?php echo formatDuration($stats['avg_latency'] ?: 0); ?></div>
+                        <div class="text-sm text-gray-600">Avg Response</div>
+                        <div class="text-xs text-gray-500">
+                            Min: <?php echo formatDuration($stats['min_latency'] ?: 0); ?> | 
+                            Max: <?php echo formatDuration($stats['max_latency'] ?: 0); ?>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Recent Incidents -->
+                <?php if (!empty($incidents)): ?>
+                <div class="mt-6 pt-6 border-t border-gray-200">
+                    <h4 class="text-sm font-semibold text-gray-900 mb-3">Recent Incidents (<?php echo count($incidents); ?>)</h4>
+                    <div class="space-y-2">
+                        <?php foreach ($incidents as $incident): 
+                            $duration = '';
+                            if ($incident['ended_at']) {
+                                $start = strtotime($incident['started_at']);
+                                $end = strtotime($incident['ended_at']);
+                                $diff = $end - $start;
+                                $duration = $diff < 3600 ? floor($diff / 60) . 'min' : floor($diff / 3600) . 'h ' . floor(($diff % 3600) / 60) . 'min';
+                            } else {
+                                $duration = 'Ongoing';
+                            }
+                        ?>
+                            <div class="flex justify-between items-center text-sm">
+                                <div>
+                                    <span class="text-red-600">●</span>
+                                    <span class="text-gray-700 ml-2"><?php echo date('M j, H:i', strtotime($incident['started_at'])); ?></span>
+                                    <?php if ($incident['ended_at']): ?>
+                                        <span class="text-gray-500">- <?php echo date('H:i', strtotime($incident['ended_at'])); ?></span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="text-gray-600"><?php echo $duration; ?></div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+            </div>
+            
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </div>
 </div>
 
-<div class="tooltip" id="tooltip"></div>
-
 <script>
-function changeView(view) {
-    const params = new URLSearchParams(window.location.search);
-    params.set("view", view);
-    if (view !== "date") {
-        params.delete("date");
-    }
-    window.location.href = "?" + params.toString();
-}
-
-function viewSpecificDate(date) {
-    const params = new URLSearchParams(window.location.search);
-    params.set("view", "date");
-    params.set("date", date);
-    window.location.href = "?" + params.toString();
-}
-
-// Tooltip functionality
-document.querySelectorAll(".uptime-segment").forEach(segment => {
-    segment.addEventListener("mouseenter", function(e) {
-        const tooltip = document.getElementById("tooltip");
-        const html = this.getAttribute("data-tooltip");
+// Enhanced tooltip handling for uptime segments
+document.querySelectorAll('.uptime-segment').forEach(segment => {
+    segment.addEventListener('click', function() {
+        const checkId = this.closest('.uptime-bar').getAttribute('data-check-id');
+        const date = this.getAttribute('data-date');
+        const datetime = this.getAttribute('data-datetime');
         
-        if (html) {
-            tooltip.innerHTML = html;
-            tooltip.style.display = "block";
-            
-            const rect = this.getBoundingClientRect();
-            const tooltipRect = tooltip.getBoundingClientRect();
-            
-            // Position tooltip above the bar
-            let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
-            let top = rect.top - tooltipRect.height - 10;
-            
-            // Adjust if tooltip goes off screen
-            if (left < 10) left = 10;
-            if (left + tooltipRect.width > window.innerWidth - 10) {
-                left = window.innerWidth - tooltipRect.width - 10;
-            }
-            if (top < 10) {
-                top = rect.bottom + 10; // Show below if no space above
-            }
-            
-            tooltip.style.left = left + "px";
-            tooltip.style.top = top + "px";
+        if (date && checkId) {
+            window.location.href = `/check.php?id=${checkId}&tab=overview&range=24h&date=${date}`;
+        } else if (datetime && checkId) {
+            const dateOnly = datetime.split(' ')[0];
+            window.location.href = `/check.php?id=${checkId}&tab=overview&range=1h&date=${dateOnly}`;
         }
     });
     
-    segment.addEventListener("mouseleave", function() {
-        document.getElementById("tooltip").style.display = "none";
+    segment.addEventListener('mouseenter', function() {
+        this.style.transform = 'scaleY(1.2)';
+        this.style.zIndex = '10';
     });
     
-    segment.addEventListener("click", function() {
-        const checkId = this.closest(".uptime-bar").getAttribute("data-check-id");
-        const date = this.getAttribute("data-date");
-        const hour = this.getAttribute("data-hour");
-        
-        if (date) {
-            // For daily view, go to that specific date in hourly view
-            const params = new URLSearchParams(window.location.search);
-            params.set("view", "date");
-            params.set("date", date);
-            window.location.href = "?" + params.toString();
-        } else if (hour !== null) {
-            // For hourly view, go to check details with time filter
-            window.location.href = "/check.php?id=" + checkId + "&date=' . $startDate . '&hour=" + hour;
-        }
+    segment.addEventListener('mouseleave', function() {
+        this.style.transform = 'scaleY(1)';
+        this.style.zIndex = '1';
     });
 });
 
-// Auto-refresh for today view
-' . ($view === 'today' ? '
-setTimeout(function() {
-    if (window.location.href.indexOf("view=today") > -1) {
-        window.location.reload();
+// Auto-refresh for current data
+setInterval(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const view = urlParams.get('view') || '90d';
+    
+    if (['1h', 'today', '7d'].includes(view)) {
+        const refreshInterval = view === '1h' ? 30000 : view === 'today' ? 60000 : 300000;
+        setTimeout(() => location.reload(), refreshInterval);
     }
-}, 60000); // Refresh every minute for today view
-' : '') . '
-</script>';
+}, 0);
+</script>
 
-renderTemplate('Uptime Report', $content);
+<?php
+$content = ob_get_clean();
+renderTemplate('Uptime Reports', $content);
+?>
