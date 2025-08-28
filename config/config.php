@@ -9,21 +9,21 @@ return [
         'host' => $_ENV['DB_HOST'] ?? 'localhost',
         'name' => $_ENV['DB_NAME'] ?? 'test2_audiensi',
         'user' => $_ENV['DB_USER'] ?? 'test2_audiensi',
-        'pass' => $_ENV['DB_PASS'] ?? '!KNvM9mIOfv8r!i5',
+        'pass' => $_ENV['DB_PASS'] ?? '',
         'charset' => 'utf8mb4'
     ],
     
     // SMTP2GO API Configuration
     'smtp2go' => [
-        'api_key' => $_ENV['SMTP2GO_API_KEY'] ?? 'api-4B9734B283104D8F88172DE8C91F5BAE', // Replace with your SMTP2GO API key
-        'from_email' => $_ENV['FROM_EMAIL'] ?? 'alert@audiensi.com',
+        'api_key' => $_ENV['SMTP2GO_API_KEY'] ?? '', // Replace with your SMTP2GO API key
+        'from_email' => $_ENV['FROM_EMAIL'] ?? '',
         'from_name' => $_ENV['FROM_NAME'] ?? 'Audiensi Notif'
     ],
     
     
     'app' => [
         'timezone' => $_ENV['TIMEZONE'] ?? 'Asia/Jakarta',
-        'base_url' => $_ENV['BASE_URL'] ?? 'https://test2.audiensi.com',
+        'base_url' => $_ENV['BASE_URL'] ?? '',
         'session_lifetime' => 3600000, // 1 hour
         'max_body_sample' => 2048, // bytes
         'default_timeout' => 30,
@@ -43,4 +43,5 @@ return [
         'batch_size' => 300, // Maximum checks to load at once
         'max_execution_time' => 300 // 5 minutes max execution time
     ]
+
 ];
