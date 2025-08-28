@@ -475,20 +475,36 @@ class CheckRunner {
 
     private function closeIncident(array $check, int $resultId): void {
         try {
-            // Close all open incidents for this check
+            // First, get the open incident details before closing it
+            $openIncident = $this->db->fetchOne(
+                "SELECT id FROM incidents WHERE check_id = ? AND status = 'OPEN'",
+                [$check['id']]
+            );
+            
+            if (!$openIncident) {
+                error_log("CheckRunner: No open incidents to close for check {$check['id']}");
+                return;
+            }
+            
+            $incidentId = $openIncident['id'];
+            error_log("CheckRunner: Closing incident ID {$incidentId} for check {$check['id']}");
+            
+            // Close the incident
             $updated = $this->db->update("incidents", [
                 "ended_at" => date("Y-m-d H:i:s"),
                 "closed_by_result_id" => $resultId,
                 "status" => "CLOSED"
-            ], "check_id = ? AND status = 'OPEN'", [$check['id']]);
-
+            ], "id = ?", [$incidentId]);
+            
             if ($updated > 0) {
-                error_log("CheckRunner: Closed {$updated} incident(s) for check {$check['id']}");
-                // Send recovery alert when incidents closed
-                $this->sendAlert($check, 'RECOVERY', $resultId);
+                error_log("CheckRunner: Successfully closed incident ID {$incidentId} for check {$check['id']}");
+                
+                // Send recovery alert with the correct incident ID
+                $this->sendAlert($check, 'RECOVERY', $incidentId);
             } else {
-                error_log("CheckRunner: No open incidents found to close for check {$check['id']}");
+                error_log("CheckRunner: Failed to close incident ID {$incidentId}");
             }
+            
         } catch (Exception $e) {
             error_log("CheckRunner: Failed to close incident for check {$check['id']}: " . $e->getMessage());
         }
@@ -529,7 +545,7 @@ class CheckRunner {
         $body .= "========================================\n\n";
         
         if ($type === 'DOWN') {
-            $body .= "⚠️ Your service appears to be DOWN.\n\n";
+            $body .= "️ Your service appears to be DOWN.\n\n";
             $body .= "We detected that your monitored endpoint is not responding as expected.\n";
             $body .= "We'll continue monitoring and notify you when it's back online.\n\n";
             

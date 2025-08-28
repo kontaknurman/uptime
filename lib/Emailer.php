@@ -1,212 +1,118 @@
 <?php
-// lib/Emailer.php
+/**
+ * Emailer class using SMTP2GO API
+ * Secure implementation with proper error handling and validation
+ */
 class Emailer {
     private $config;
-    private $debug = false; // Set to true for detailed logging
+    private $apiUrl = 'https://api.smtp2go.com/v3/email/send';
+    private $debug = false;
     
     public function __construct(array $config) {
-        $this->config = $config['smtp'];
-        // Enable debug mode if in development
+        $this->config = $config['smtp2go'] ?? [];
         $this->debug = (isset($config['app']['debug']) && $config['app']['debug'] === true);
+        
+        // Validate configuration
+        if (empty($this->config['api_key'])) {
+            throw new Exception("SMTP2GO API key not configured");
+        }
     }
 
+    /**
+     * Send email using SMTP2GO API
+     * @param string $to Recipient email address
+     * @param string $subject Email subject
+     * @param string $body Email body (plain text)
+     * @return bool Success status
+     */
     public function send(string $to, string $subject, string $body): bool {
-        // Validate email
+        // Validate email address
         if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
             error_log("Emailer: Invalid email address: {$to}");
             return false;
         }
 
-        // Simple SMTP implementation with better error handling
+        // Sanitize inputs to prevent injection
+        $subject = $this->sanitizeHeader($subject);
+        
         try {
-            $socket = $this->connectToSMTP();
-            if (!$socket) {
-                error_log("Emailer: Failed to connect to SMTP server");
+            // Prepare API request data
+            $data = [
+                'api_key' => $this->config['api_key'],
+                'to' => [$to],
+                'sender' => $this->config['from_email'],
+                'subject' => $subject,
+                'text_body' => $body,
+                'custom_headers' => [
+                    [
+                        'header' => 'X-Mailer',
+                        'value' => 'Uptime Monitor'
+                    ],
+                    [
+                        'header' => 'X-Priority',
+                        'value' => '3'
+                    ]
+                ]
+            ];
+
+            // Add sender name if configured
+            if (!empty($this->config['from_name'])) {
+                $data['sender'] = "{$this->config['from_name']} <{$this->config['from_email']}>";
+            }
+
+            // Make API request
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $this->apiUrl,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($data),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Accept: application/json'
+                ],
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_MAXREDIRS => 0
+            ]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+
+            if ($curlError) {
+                error_log("Emailer: CURL error - {$curlError}");
                 return false;
             }
 
-            // Send EHLO
-            $this->sendSMTPCommand($socket, "EHLO localhost");
-            
-            // Handle STARTTLS for TLS encryption
-            if ($this->config['encryption'] === 'tls') {
-                $this->sendSMTPCommand($socket, "STARTTLS");
-                
-                // Enable crypto
-                $crypto = stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-                if (!$crypto) {
-                    error_log("Emailer: Failed to enable TLS encryption");
-                    throw new Exception("Failed to enable TLS encryption");
+            $responseData = json_decode($response, true);
+
+            if ($httpCode === 200 && isset($responseData['data']['succeeded']) && $responseData['data']['succeeded'] > 0) {
+                if ($this->debug) {
+                    error_log("Emailer: Email sent successfully to {$to}");
+                    if (isset($responseData['data']['email_id'])) {
+                        error_log("Emailer: Email ID: " . $responseData['data']['email_id']);
+                    }
                 }
-                
-                // Send EHLO again after STARTTLS
-                $this->sendSMTPCommand($socket, "EHLO localhost");
+                return true;
+            } else {
+                $errorMsg = $responseData['data']['error'] ?? 'Unknown error';
+                error_log("Emailer: Failed to send email. HTTP {$httpCode}. Error: {$errorMsg}");
+                return false;
             }
-
-            // Authentication
-            if (!empty($this->config['username'])) {
-                try {
-                    $this->sendSMTPCommand($socket, "AUTH LOGIN");
-                    $this->sendSMTPCommand($socket, base64_encode($this->config['username']));
-                    $this->sendSMTPCommand($socket, base64_encode($this->config['password']));
-                } catch (Exception $e) {
-                    error_log("Emailer: Authentication failed - " . $e->getMessage());
-                    throw new Exception("SMTP authentication failed");
-                }
-            }
-
-            // Send email envelope
-            $this->sendSMTPCommand($socket, "MAIL FROM: <{$this->config['from_email']}>");
-            $this->sendSMTPCommand($socket, "RCPT TO: <{$to}>");
-            $this->sendSMTPCommand($socket, "DATA");
-
-            // Build and send email content
-            $email = $this->buildEmailMessage($to, $subject, $body);
-            fwrite($socket, $email . "\r\n.\r\n");
-            
-            // Get response after sending data
-            $response = fgets($socket);
-            if (strpos($response, '250') !== 0) {
-                error_log("Emailer: Failed to send message. Response: " . trim($response));
-                throw new Exception("Failed to send message");
-            }
-
-            // Quit
-            $this->sendSMTPCommand($socket, "QUIT");
-            fclose($socket);
-
-            // Only log successful sends in debug mode or for important subjects
-            if ($this->debug || strpos($subject, 'DOWN') !== false || strpos($subject, 'RECOVERY') !== false) {
-                error_log("Emailer: Sent alert to {$to} - Subject: {$subject}");
-            }
-            
-            return true;
             
         } catch (Exception $e) {
-            error_log('Emailer: Email send failed - ' . $e->getMessage());
-            if (isset($socket) && is_resource($socket)) {
-                fwrite($socket, "QUIT\r\n");
-                fclose($socket);
-            }
+            error_log("Emailer: Exception - " . $e->getMessage());
             return false;
         }
     }
 
-    private function connectToSMTP() {
-        // Create stream context with timeout
-        $context = stream_context_create([
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true
-            ]
-        ]);
-        
-        // Determine connection string
-        if ($this->config['encryption'] === 'ssl') {
-            $host = 'ssl://' . $this->config['host'];
-        } else {
-            $host = $this->config['host'];
-        }
-
-        if ($this->debug) {
-            error_log("Emailer: Connecting to {$host}:{$this->config['port']}");
-        }
-
-        // Connect with timeout
-        $socket = @stream_socket_client(
-            "{$host}:{$this->config['port']}", 
-            $errno, 
-            $errstr, 
-            30, 
-            STREAM_CLIENT_CONNECT, 
-            $context
-        );
-
-        if (!$socket) {
-            error_log("Emailer: SMTP connection failed to {$host}:{$this->config['port']} - {$errstr} (Error {$errno})");
-            return false;
-        }
-
-        // Set timeout for socket operations
-        stream_set_timeout($socket, 30);
-
-        // Read greeting
-        $response = fgets($socket);
-        if (strpos($response, '220') !== 0) {
-            error_log("Emailer: Invalid SMTP greeting: " . trim($response));
-            fclose($socket);
-            return false;
-        }
-
-        if ($this->debug) {
-            error_log("Emailer: Connected successfully");
-        }
-        
-        return $socket;
-    }
-
-    private function sendSMTPCommand($socket, string $command): string {
-        // Only log in debug mode (except for errors)
-        if ($this->debug) {
-            $logCommand = $command;
-            if (strpos($command, 'AUTH') === false && strlen($command) < 100) {
-                error_log("Emailer: >> " . trim($command));
-            } elseif (strpos($command, 'AUTH LOGIN') === 0) {
-                error_log("Emailer: >> AUTH LOGIN");
-            } else {
-                error_log("Emailer: >> [CREDENTIALS]");
-            }
-        }
-        
-        fwrite($socket, $command . "\r\n");
-        $response = fgets($socket);
-        
-        if ($this->debug) {
-            error_log("Emailer: << " . trim($response));
-        }
-        
-        // Check for success response codes
-        $successCodes = ['220', '221', '235', '250', '334', '354'];
-        $responseCode = substr($response, 0, 3);
-        
-        if (!in_array($responseCode, $successCodes)) {
-            // Always log errors
-            error_log("Emailer: SMTP command failed. Response: " . trim($response));
-            throw new Exception("SMTP command failed. Response: " . trim($response));
-        }
-        
-        return $response;
-    }
-
-    private function buildEmailMessage(string $to, string $subject, string $body): string {
-        $headers = [];
-        
-        // From header with name if provided
-        if (!empty($this->config['from_name'])) {
-            $headers[] = "From: {$this->config['from_name']} <{$this->config['from_email']}>";
-        } else {
-            $headers[] = "From: {$this->config['from_email']}";
-        }
-        
-        $headers[] = "To: {$to}";
-        $headers[] = "Subject: {$subject}";
-        $headers[] = "Date: " . date('r');
-        $headers[] = "Message-ID: <" . md5(uniqid(rand(), true)) . "@" . ($_SERVER['HTTP_HOST'] ?? 'localhost') . ">";
-        $headers[] = "MIME-Version: 1.0";
-        $headers[] = "Content-Type: text/plain; charset=UTF-8";
-        $headers[] = "Content-Transfer-Encoding: 8bit";
-        $headers[] = "X-Mailer: Uptime Monitor";
-        $headers[] = "X-Priority: 3";
-
-        // Build complete message
-        $message = implode("\r\n", $headers) . "\r\n\r\n" . $body;
-        
-        return $message;
-    }
-    
     /**
-     * Test method to verify SMTP configuration
+     * Test API connectivity and authentication
+     * @return array Test results
      */
     public function test(): array {
         $results = [
@@ -217,44 +123,166 @@ class Emailer {
         ];
         
         // Check configuration
-        if (empty($this->config['host']) || empty($this->config['username']) || empty($this->config['password'])) {
-            $results['errors'][] = "Incomplete SMTP configuration";
+        if (empty($this->config['api_key']) || empty($this->config['from_email'])) {
+            $results['errors'][] = "Incomplete SMTP2GO configuration";
             return $results;
         }
         
         $results['config_valid'] = true;
         
-        // Test connection
+        // Test API connection and authentication using a simple email validation test
         try {
-            $socket = $this->connectToSMTP();
-            if ($socket) {
-                $results['connection'] = true;
-                
-                // Test authentication
-                try {
-                    $this->sendSMTPCommand($socket, "EHLO localhost");
-                    
-                    if ($this->config['encryption'] === 'tls') {
-                        $this->sendSMTPCommand($socket, "STARTTLS");
-                        stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-                        $this->sendSMTPCommand($socket, "EHLO localhost");
-                    }
-                    
-                    $this->sendSMTPCommand($socket, "AUTH LOGIN");
-                    $this->sendSMTPCommand($socket, base64_encode($this->config['username']));
-                    $this->sendSMTPCommand($socket, base64_encode($this->config['password']));
-                    
+            // Use the email/send endpoint with validate_only flag for testing
+            $testData = [
+                'api_key' => $this->config['api_key'],
+                'to' => ['test@example.com'],
+                'sender' => $this->config['from_email'],
+                'subject' => 'API Test',
+                'text_body' => 'Test',
+                'test_mode' => true  // This prevents actual sending
+            ];
+            
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $this->apiUrl,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($testData),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Accept: application/json'
+                ],
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_TIMEOUT => 10
+            ]);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+            
+            if ($curlError) {
+                $results['errors'][] = "Connection failed: " . $curlError;
+                return $results;
+            }
+            
+            $results['connection'] = true;
+            
+            // Check authentication based on response
+            if ($httpCode === 200) {
+                $responseData = json_decode($response, true);
+                if (isset($responseData['data'])) {
                     $results['authentication'] = true;
-                    
-                    $this->sendSMTPCommand($socket, "QUIT");
-                    fclose($socket);
-                    
-                } catch (Exception $e) {
-                    $results['errors'][] = "Authentication failed: " . $e->getMessage();
+                } else {
+                    $results['errors'][] = "API response format unexpected";
+                }
+            } elseif ($httpCode === 401) {
+                $results['errors'][] = "Invalid API key - authentication failed";
+            } elseif ($httpCode === 403) {
+                $results['errors'][] = "API key valid but lacks permissions";
+            } else {
+                $responseData = json_decode($response, true);
+                $errorMsg = $responseData['data']['error'] ?? "Unknown error (HTTP {$httpCode})";
+                $results['errors'][] = "API error: " . $errorMsg;
+            }
+            
+        } catch (Exception $e) {
+            $results['errors'][] = "Exception: " . $e->getMessage();
+        }
+        
+        return $results;
+    }
+
+    /**
+     * Sanitize header values to prevent injection
+     * @param string $value Header value
+     * @return string Sanitized value
+     */
+    private function sanitizeHeader(string $value): string {
+        // Remove line breaks and null bytes
+        $value = str_replace(["\r", "\n", "\0", "\t"], '', $value);
+        // Limit length for security
+        return substr(trim($value), 0, 998);
+    }
+
+    /**
+     * Send batch emails efficiently
+     * @param array $recipients Array of email addresses
+     * @param string $subject Email subject
+     * @param string $body Email body
+     * @return array Results with success/failure for each recipient
+     */
+    public function sendBatch(array $recipients, string $subject, string $body): array {
+        $results = [];
+        
+        // Validate all recipients first
+        $validRecipients = [];
+        foreach ($recipients as $email) {
+            if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $validRecipients[] = $email;
+            } else {
+                $results[$email] = false;
+                error_log("Emailer: Invalid email in batch: {$email}");
+            }
+        }
+        
+        if (empty($validRecipients)) {
+            return $results;
+        }
+        
+        // SMTP2GO supports up to 50 recipients per request
+        $chunks = array_chunk($validRecipients, 50);
+        
+        foreach ($chunks as $chunk) {
+            try {
+                $data = [
+                    'api_key' => $this->config['api_key'],
+                    'to' => $chunk,
+                    'sender' => $this->config['from_email'],
+                    'subject' => $this->sanitizeHeader($subject),
+                    'text_body' => $body
+                ];
+                
+                if (!empty($this->config['from_name'])) {
+                    $data['sender'] = "{$this->config['from_name']} <{$this->config['from_email']}>";
+                }
+                
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $this->apiUrl,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => json_encode($data),
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HTTPHEADER => [
+                        'Content-Type: application/json',
+                        'Accept: application/json'
+                    ],
+                    CURLOPT_SSL_VERIFYPEER => true,
+                    CURLOPT_SSL_VERIFYHOST => 2,
+                    CURLOPT_TIMEOUT => 30
+                ]);
+                
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                
+                if ($httpCode === 200) {
+                    foreach ($chunk as $email) {
+                        $results[$email] = true;
+                    }
+                } else {
+                    foreach ($chunk as $email) {
+                        $results[$email] = false;
+                    }
+                }
+                
+            } catch (Exception $e) {
+                error_log("Emailer: Batch send exception - " . $e->getMessage());
+                foreach ($chunk as $email) {
+                    $results[$email] = false;
                 }
             }
-        } catch (Exception $e) {
-            $results['errors'][] = "Connection failed: " . $e->getMessage();
         }
         
         return $results;
