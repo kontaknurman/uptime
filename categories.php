@@ -74,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         case 'delete':
             $categoryId = (int)($_POST['category_id'] ?? 0);
-            if ($categoryId) {
+            if ($categoryId > 0) {
                 try {
                     // Check if category has checks
                     $checkCount = $db->fetchColumn(
@@ -85,16 +85,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($checkCount > 0) {
                         $errors[] = "Cannot delete category with $checkCount assigned checks. Please reassign them first.";
                     } else {
+                        // Use a transaction for safety
+                        $db->beginTransaction();
                         $deleted = $db->delete('categories', 'id = ?', [$categoryId]);
+                        
                         if ($deleted > 0) {
+                            $db->commit();
                             $message = '<div class="mb-4 p-4 bg-green-50 border-l-4 border-green-500 rounded-lg">
                                 <p class="text-green-800 font-medium">Category deleted successfully!</p>
                             </div>';
+                        } else {
+                            $db->rollback();
+                            $errors[] = 'Category not found or already deleted.';
                         }
                     }
                 } catch (Exception $e) {
-                    $errors[] = 'Failed to delete category: ' . $e->getMessage();
+                    if ($db->pdo && $db->pdo->inTransaction()) {
+                        $db->rollback();
+                    }
+                    // More detailed error reporting
+                    if (strpos($e->getMessage(), 'foreign key constraint') !== false) {
+                        $errors[] = 'Cannot delete category: it has associated checks that must be reassigned first.';
+                    } else {
+                        $errors[] = 'Failed to delete category: ' . $e->getMessage();
+                    }
                 }
+            } else {
+                $errors[] = 'Invalid category ID provided.';
             }
             break;
     }
@@ -275,8 +292,10 @@ ob_start();
                             </div>
                         </div>
                         <div class="relative">
-                            <button onclick="showCategoryActions(<?php echo $category['id']; ?>, '<?php echo htmlspecialchars(addslashes($category['name'])); ?>', <?php echo $category['total_checks']; ?>)" 
-                                    class="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                            <button data-category-id="<?php echo $category['id']; ?>" 
+                                    data-category-name="<?php echo htmlspecialchars($category['name']); ?>" 
+                                    data-category-checks="<?php echo $category['total_checks']; ?>"
+                                    class="category-actions-btn p-2 hover:bg-gray-100 rounded-full transition-colors">
                                 <svg class="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
                                     <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/>
                                 </svg>
@@ -432,6 +451,9 @@ let currentCategoryId = null;
 let currentCategoryName = null;
 let currentCategoryCheckCount = 0;
 
+// Categories data from PHP
+const categoriesData = <?php echo json_encode($categories); ?>;
+
 function openCategoryModal() {
     document.getElementById('categoryModal').classList.remove('hidden');
     document.getElementById('categoryName').focus();
@@ -451,14 +473,19 @@ function resetForm() {
     document.getElementById('submitText').textContent = 'Create Category';
     
     // Select first color by default
-    document.querySelector('input[name="color"]').checked = true;
-    updateColorSelection();
+    const firstColorInput = document.querySelector('input[name="color"]');
+    if (firstColorInput) {
+        firstColorInput.checked = true;
+        updateColorSelection();
+    }
 }
 
 function showCategoryActions(id, name, checkCount) {
     currentCategoryId = id;
     currentCategoryName = name;
     currentCategoryCheckCount = checkCount;
+    
+    console.log('Category ID:', id, 'Name:', name, 'Check Count:', checkCount);
     
     document.getElementById('actionsModalTitle').textContent = name;
     document.getElementById('categoryActionsModal').classList.remove('hidden');
@@ -476,31 +503,34 @@ function closeCategoryActionsModal() {
 function editCategory() {
     if (!currentCategoryId) return;
     
-    // Fetch category data and populate form
-    fetch(`/api/category/${currentCategoryId}`)
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('categoryName').value = data.name;
-            document.getElementById('categoryIcon').value = data.icon;
-            document.getElementById('categoryDesc').value = data.description || '';
-            
-            // Select the correct color
-            document.querySelector(`input[name="color"][value="${data.color}"]`).checked = true;
-            updateColorSelection();
-            
-            // Update form for editing
-            document.getElementById('formAction').value = 'update';
-            document.getElementById('categoryId').value = currentCategoryId;
-            document.getElementById('modalTitle').textContent = 'Edit Category';
-            document.getElementById('submitText').textContent = 'Update Category';
-            
-            closeCategoryActionsModal();
-            openCategoryModal();
-        })
-        .catch(error => {
-            console.error('Error fetching category:', error);
-            alert('Failed to load category data');
-        });
+    // Find the category data from the current page data
+    const category = categoriesData.find(cat => cat.id == currentCategoryId);
+    
+    if (!category) {
+        alert('Category data not found');
+        return;
+    }
+    
+    // Populate form with category data
+    document.getElementById('categoryName').value = category.name;
+    document.getElementById('categoryIcon').value = category.icon;
+    document.getElementById('categoryDesc').value = category.description || '';
+    
+    // Select the correct color
+    const colorRadio = document.querySelector(`input[name="color"][value="${category.color}"]`);
+    if (colorRadio) {
+        colorRadio.checked = true;
+        updateColorSelection();
+    }
+    
+    // Update form for editing
+    document.getElementById('formAction').value = 'update';
+    document.getElementById('categoryId').value = currentCategoryId;
+    document.getElementById('modalTitle').textContent = 'Edit Category';
+    document.getElementById('submitText').textContent = 'Update Category';
+    
+    closeCategoryActionsModal();
+    openCategoryModal();
 }
 
 function viewCategoryChecks() {
@@ -511,16 +541,22 @@ function viewCategoryChecks() {
 }
 
 function deleteCategoryConfirm() {
-    if (!currentCategoryId || !currentCategoryName) return;
-    
-    closeCategoryActionsModal();
-    
-    if (currentCategoryCheckCount > 0) {
-        alert(`Cannot delete "${currentCategoryName}" because it has ${currentCategoryCheckCount} assigned checks. Please reassign them first.`);
+    if (!currentCategoryId || !currentCategoryName) {
+        console.log('Missing data - ID:', currentCategoryId, 'Name:', currentCategoryName);
         return;
     }
     
-    if (confirm(`Are you sure you want to delete category "${currentCategoryName}"?`)) {
+    closeCategoryActionsModal();
+    
+    console.log('Attempting to delete category with', currentCategoryCheckCount, 'checks');
+    
+    // Let server handle the validation - show warning but allow submission
+    let confirmMessage = `Are you sure you want to delete category "${currentCategoryName}"?`;
+    if (currentCategoryCheckCount > 0) {
+        confirmMessage += `\n\nNote: This category has ${currentCategoryCheckCount} assigned checks. Categories with assigned checks cannot be deleted.`;
+    }
+    
+    if (confirm(confirmMessage)) {
         const form = document.createElement('form');
         form.method = 'POST';
         form.innerHTML = `
@@ -535,12 +571,26 @@ function deleteCategoryConfirm() {
 
 // Color selection handling
 document.addEventListener('DOMContentLoaded', function() {
+    // Category actions button handler
+    document.querySelectorAll('.category-actions-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const categoryId = parseInt(this.dataset.categoryId);
+            const categoryName = this.dataset.categoryName;
+            const categoryChecks = parseInt(this.dataset.categoryChecks);
+            
+            showCategoryActions(categoryId, categoryName, categoryChecks);
+        });
+    });
+    
+    // Color option handlers
     const colorOptions = document.querySelectorAll('.color-option');
     colorOptions.forEach(option => {
         option.addEventListener('click', function() {
             const radio = document.getElementById(this.getAttribute('for'));
-            radio.checked = true;
-            updateColorSelection();
+            if (radio) {
+                radio.checked = true;
+                updateColorSelection();
+            }
         });
     });
     

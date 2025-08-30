@@ -595,7 +595,6 @@ ob_start();
                 
                 <!-- Multi-Select Category Filter -->
                 <div class="relative">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Categories</label>
                     <div class="relative">
                         <button type="button" id="categoryDropdown" 
                                 class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 bg-white flex items-center justify-between min-w-[200px] text-left hover:bg-gray-50 transition-colors"
