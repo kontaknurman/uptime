@@ -270,7 +270,7 @@ CREATE TABLE `users` (
 --
 
 INSERT INTO `users` (`id`, `email`, `name`, `password_hash`, `created_at`) VALUES
-(2, 'kontaknurman@gmail.com', 'admin', '$2y$12$jxSwE4HQDOZR3DiJPY8QiuQf5DdAT0glKkpNBC2pdPlUt9KRbpGRC', '2025-08-27 08:15:55');
+(2, 'kontaknurman@gmail.com', 'admin', '$2y$12$jxSwE4HQDOZR3DiJPY8QiuQf5DdAT', '2025-08-27 08:15:55');
 
 -- --------------------------------------------------------
 
@@ -436,3 +436,4 @@ COMMIT;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+
